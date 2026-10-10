@@ -23,17 +23,23 @@ import config  # noqa: F401 — ВАЖНО: настройка Kivy + шрифт
 import sys
 import os
 
+# --- ВАЖНО для .exe в режиме --windowed:
+# PyInstaller подменяет sys.stdout/sys.stderr на None, и Kivy может
+# молча терять специальные клавиши (Tab, стрелки). Подменяем на devnull.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
+
 # --- ВАЖНО для собранного .exe: вернуть _MEIPASS в начало sys.path ---
 if getattr(sys, 'frozen', False):
     _meipass = getattr(sys, '_MEIPASS', None)
     if _meipass and os.path.isdir(_meipass):
-        # если путь уже есть — убираем, чтобы вставить в начало
         while _meipass in sys.path:
             sys.path.remove(_meipass)
         sys.path.insert(0, _meipass)
 
 import config  # noqa: F401 — настройка Kivy + шрифт
-# дальше — весь остальной файл как было
 import platform
 
 from kivy.app import App
@@ -68,9 +74,17 @@ TOPBAR_H    = dp(52)     # общая высота шапки
 EXIT_BTN_W  = dp(150)    # ширина кнопки «Выход»
 EXIT_BTN_H  = dp(40)     # высота кнопки «Выход»
 
-
 class TabelApp(App):
     title = "Табель учёта рабочего времени"
+
+    def on_start(self):
+        """Форсируем фокус окна — иначе в .exe клавиатура
+        может не дойти до TextInput до первого клика."""
+        try:
+            Window.focus = True
+            Window.raise_window()
+        except Exception:
+            pass
 
     def build(self):
         # ---- Заголовок: если иконки нет — добавим эмодзи ----

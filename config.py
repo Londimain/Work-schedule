@@ -16,6 +16,7 @@ from kivy.config import Config
 Config.set('input', 'mouse', 'mouse,disable_multitouch')
 Config.set('graphics', 'dpi', '96')
 Config.set('graphics', 'multisamples', '0')
+Config.set('kivy', 'keyboard_mode', 'system')
 
 from kivy.core.text import LabelBase
 from kivy.core.window import Window
