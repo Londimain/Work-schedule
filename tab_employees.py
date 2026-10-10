@@ -284,7 +284,7 @@ class EmployeesTab(BoxLayout):
     def show_edit_popup(self, idx):
         emp = (self.app.data['employees'][idx] if idx is not None
                else {'name': '', 'position': '', 'department': '',
-                     'show_in_timesheet': True})
+                     'show_in_timesheet': False})
         positions = self.app.data.get('positions', []) or list(DEFAULT_POSITIONS)
         departments = self.app.data.get('departments', [])
 
@@ -356,7 +356,7 @@ class EmployeesTab(BoxLayout):
             if not name:
                 return
             new_dept = dept_w.text.strip()
-            show_in = emp.get('show_in_timesheet', True)
+            show_in = emp.get('show_in_timesheet', False)
             new_emp = {
                 'id': emp.get('id') or f"emp_{int(datetime.now().timestamp() * 1000)}",
                 'name': name,

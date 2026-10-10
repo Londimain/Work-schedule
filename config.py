@@ -64,8 +64,7 @@ YEARS = [str(y) for y in range(2024, 2036)]
 
 WEEKDAYS_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
-DEFAULT_POSITIONS = ["электромонтер", "оператор котельной",
-                     "энергетик", "слесарь"]
+DEFAULT_POSITIONS = ["электромонтер", "оператор котельной"]
 DEFAULT_DEPARTMENTS = ["ЭНЕРГОСЛУЖБА"]
 DEFAULT_ORG = 'ОАО "Компания "МогНат"'
 
