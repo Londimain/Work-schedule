@@ -1,0 +1,618 @@
+# tab_timesheet.py
+# -*- coding: utf-8 -*-
+"""Вкладка «Табель»."""
+import config  # noqa: F401
+
+from calendar import monthrange
+from datetime import datetime, date
+
+from kivy.clock import Clock
+from kivy.metrics import dp
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
+from kivy.uix.gridlayout import GridLayout
+from kivy.uix.label import Label
+from kivy.uix.popup import Popup
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.spinner import Spinner
+from kivy.uix.widget import Widget
+from kivy.graphics import Color, Rectangle
+
+from config import (FONT_NAME, LABEL_LIGHT, MONTHS, YEARS,
+                    SPINNER_BG, SPINNER_FG, RIGHT_COLUMNS,
+                    HEADER_BG, HEADER_FG)
+from data_utils import (save_data, classify_day, analyze_row,
+                        apply_overtime, fmt_hours)
+from ui_helpers import (add_bottom_border, add_left_border, add_right_border,
+                        vsep, sync_vertical, measure_text_width,
+                        HorizontalScrollView)
+from ui_widgets import (VerticalLabel, DayCell, ResultCell, DayHeader)
+
+
+class TimesheetTab(BoxLayout):
+    def __init__(self, app, **kwargs):
+        super().__init__(orientation='vertical', **kwargs)
+        self.app = app
+        self.day_inputs = {}
+        self.total_labels = {}
+        self._last_key = None
+        self._loading = False
+        self._save_event = None
+        self._day_types = []
+        self._emp_night = {}
+        self._emp_overtime = {}
+        self._emp_holiday = {}
+        self._suppress_result_cb = False
+        self._build()
+
+    def _build(self):
+        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=5,
+                        padding=(5, 2, 5, 2))
+        top.add_widget(Label(text="Месяц:", size_hint_x=None, width=dp(70),
+                             color=LABEL_LIGHT, font_name=FONT_NAME,
+                             font_size=dp(15)))
+        self.month_spinner = Spinner(text=MONTHS[datetime.now().month - 1],
+                                     values=MONTHS, size_hint_x=None, width=dp(150),
+                                     font_name=FONT_NAME,
+                                     background_color=SPINNER_BG, color=SPINNER_FG)
+        top.add_widget(self.month_spinner)
+
+        top.add_widget(Label(text="Год:", size_hint_x=None, width=dp(50),
+                             color=LABEL_LIGHT, font_name=FONT_NAME,
+                             font_size=dp(15)))
+        self.year_spinner = Spinner(text=str(datetime.now().year),
+                                    values=YEARS, size_hint_x=None, width=dp(100),
+                                    font_name=FONT_NAME,
+                                    background_color=SPINNER_BG, color=SPINNER_FG)
+        top.add_widget(self.year_spinner)
+
+        top.add_widget(Widget())
+
+        apply_btn = Button(text="Применить правки", size_hint_x=None, width=dp(170),
+                           font_name=FONT_NAME, font_size=dp(15), bold=True,
+                           background_color=(0.25, 0.55, 0.85, 1),
+                           color=(1, 1, 1, 1))
+        apply_btn.bind(on_press=lambda *a: self.apply_overrides())
+        top.add_widget(apply_btn)
+        
+        reset_btn = Button(text="Сбросить правки",
+                           size_hint_x=None, width=dp(170),
+                           font_name=FONT_NAME, font_size=dp(15), bold=True,
+                           background_color=(0.5, 0.4, 0.75, 1),
+                           color=(1, 1, 1, 1))
+        reset_btn.bind(on_press=lambda *a: self.reset_overrides())
+        top.add_widget(reset_btn)
+
+        clear_btn = Button(text="Очистить", size_hint_x=None, width=dp(140),
+                           font_name=FONT_NAME, font_size=dp(15), bold=True,
+                           background_color=(0.9, 0.55, 0.2, 1), color=(1, 1, 1, 1))
+        clear_btn.bind(on_press=lambda *a: self.confirm_clear())
+        top.add_widget(clear_btn)
+        self.add_widget(top)
+
+        self.main_container = BoxLayout(orientation='vertical', spacing=0)
+        self.add_widget(self.main_container)
+
+        self.month_spinner.bind(text=self._on_period_change)
+        self.year_spinner.bind(text=self._on_period_change)
+
+        self.load_timesheet()
+
+    # ---------------- служебные ------------------------------------------
+    def _get_key(self):
+        m = MONTHS.index(self.month_spinner.text) + 1
+        y = int(self.year_spinner.text)
+        return f"{y}-{m:02d}"
+
+    def _get_norm_hours(self):
+        y = int(self.year_spinner.text)
+        m = MONTHS.index(self.month_spinner.text) + 1
+        days_in_month = monthrange(y, m)[1]
+        work_days = sum(1 for d in range(1, days_in_month + 1)
+                        if classify_day(y, m, d) == 'work')
+        return work_days * 8.0
+
+    def _on_period_change(self, *args):
+        if self._loading:
+            return
+        if self._last_key:
+            self._save_for_key(self._last_key)
+        self.load_timesheet()
+
+    def _save_for_key(self, key):
+        ts = self.app.data['timesheets'].setdefault(key, {})
+        for emp_id, cells in self.day_inputs.items():
+            emp_data = {}
+            for d, cell in enumerate(cells, start=1):
+                txt = cell.input.text.strip()
+                if txt:
+                    emp_data[str(d)] = txt
+            ts[emp_id] = emp_data
+        save_data(self.app.data)
+
+    def _save_all(self, dt=0):
+        self._save_for_key(self._get_key())
+
+    def _schedule_save(self, *a):
+        if self._save_event:
+            self._save_event.cancel()
+        self._save_event = Clock.schedule_once(self._save_all, 0.6)
+
+    def _on_day_change(self, emp_id):
+        self._recalc_totals(emp_id)
+        self._schedule_save()
+
+    def _employees_for_ts(self):
+        return [emp for emp in self.app.data['employees']
+                if emp.get('show_in_timesheet', True)]
+
+    # ---------------- диалоги --------------------------------------------
+    def confirm_clear(self):
+        content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+        content.add_widget(Label(
+            text=f"Очистить все данные за\n{self.month_spinner.text} "
+                 f"{self.year_spinner.text}?",
+            color=LABEL_LIGHT, halign='center',
+            font_name=FONT_NAME, font_size=dp(15),
+            outline_color=(0, 0, 0, 1), outline_width=1))
+        btns = BoxLayout(size_hint_y=None, height=dp(40), spacing=10)
+        yes = Button(text="Да, очистить", background_color=(0.9, 0.35, 0.35, 1),
+                     color=(1, 1, 1, 1),
+                     font_name=FONT_NAME, font_size=dp(16), bold=True)
+        no = Button(text="Отмена", color=(1, 1, 1, 1),
+                    font_name=FONT_NAME, font_size=dp(16), bold=True)
+        btns.add_widget(yes)
+        btns.add_widget(no)
+        content.add_widget(btns)
+        popup = Popup(title="Подтверждение", content=content,
+                      size_hint=(0.5, 0.35), title_color=LABEL_LIGHT,
+                      title_font=FONT_NAME)
+
+        def do_clear(*a):
+            key = self._get_key()
+            self.app.data['timesheets'][key] = {}
+            save_data(self.app.data)
+            popup.dismiss()
+            self.load_timesheet()
+
+        yes.bind(on_press=do_clear)
+        no.bind(on_press=popup.dismiss)
+        popup.open()
+
+    def _get_overrides(self):
+        key = self._get_key()
+        return (self.app.data.setdefault('result_overrides', {})
+                .setdefault(key, {}))
+
+    def _on_result_change(self, emp_id, col_key, value):
+        if self._suppress_result_cb:
+            return
+        cell = self.total_labels.get(emp_id, {}).get(col_key)
+        if cell is None or not cell.input.focused:
+            return
+        emp_over = self._get_overrides().setdefault(emp_id, {})
+        v = value.strip()
+        if v == '':
+            emp_over.pop(col_key, None)
+            self._recalc_totals(emp_id)
+        else:
+            emp_over[col_key] = v
+        self._schedule_save()
+
+    def _on_result_focus(self, emp_id, col_key, focused):
+        cell = self.total_labels.get(emp_id, {}).get(col_key)
+        if cell is None:
+            return
+        if focused:
+            Clock.schedule_once(lambda dt: cell.input.select_all(), 0)
+        else:
+            if cell.input.text.strip() == '':
+                self._recalc_totals(emp_id)
+
+    def apply_overrides(self):
+        key = self._get_key()
+        overrides = self.app.data.setdefault('result_overrides', {}).setdefault(key, {})
+        for emp_id, labels in self.total_labels.items():
+            emp_over = overrides.setdefault(emp_id, {})
+            for col_key, cell in labels.items():
+                if not cell.input.focused:
+                    continue
+                txt = cell.input.text.strip()
+                if txt == '':
+                    emp_over.pop(col_key, None)
+                else:
+                    emp_over[col_key] = txt
+        save_data(self.app.data)
+        for emp_id in list(self.total_labels.keys()):
+            self._recalc_totals(emp_id)
+
+    def reset_overrides(self):
+        content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+        content.add_widget(Label(
+            text=(f"Сбросить все ручные правки итогов за\n"
+                  f"{self.month_spinner.text} {self.year_spinner.text}?"),
+            color=LABEL_LIGHT, halign='center',
+            font_name=FONT_NAME, font_size=dp(15),
+            outline_color=(0, 0, 0, 1), outline_width=1))
+        btns = BoxLayout(size_hint_y=None, height=dp(40), spacing=10)
+        yes = Button(text="Да, сбросить",
+                     background_color=(0.6, 0.4, 0.8, 1), color=(1, 1, 1, 1),
+                     font_name=FONT_NAME, font_size=dp(16), bold=True)
+        no = Button(text="Отмена", color=(1, 1, 1, 1),
+                    font_name=FONT_NAME, font_size=dp(16), bold=True)
+        btns.add_widget(yes)
+        btns.add_widget(no)
+        content.add_widget(btns)
+        popup = Popup(title="Сброс правок", content=content,
+                      size_hint=(0.5, 0.35), title_color=LABEL_LIGHT,
+                      title_font=FONT_NAME)
+
+        def do_reset(*a):
+            key = self._get_key()
+            self.app.data.setdefault('result_overrides', {})[key] = {}
+            save_data(self.app.data)
+            popup.dismiss()
+            self.load_timesheet()
+
+        yes.bind(on_press=do_reset)
+        no.bind(on_press=popup.dismiss)
+        popup.open()
+
+    # ---------------- основная загрузка ----------------------------------
+    def load_timesheet(self):
+        self._loading = True
+        try:
+            self.main_container.clear_widgets()
+            self.day_inputs.clear()
+            self.total_labels.clear()
+
+            key = self._get_key()
+            y = int(self.year_spinner.text)
+            m = MONTHS.index(self.month_spinner.text) + 1
+            days_in_month = monthrange(y, m)[1]
+            ts = self.app.data['timesheets'].setdefault(key, {})
+
+            day_types = [classify_day(y, m, d)
+                         for d in range(1, days_in_month + 1)]
+            self._day_types = day_types
+
+            night_flags = self.app.data.get('night_flags', {})
+            overtime_flags = self.app.data.get('overtime_flags', {})
+            holiday_flags = self.app.data.get('holiday_flags', {})
+            self._emp_night = {}
+            self._emp_overtime = {}
+            self._emp_holiday = {}
+            employees = self._employees_for_ts()
+            for emp in employees:
+                pos_name = emp.get('position', '')
+                self._emp_night[emp['id']] = bool(night_flags.get(pos_name, False))
+                self._emp_overtime[emp['id']] = bool(overtime_flags.get(pos_name, False))
+                self._emp_holiday[emp['id']] = bool(holiday_flags.get(pos_name, True))
+
+            W_NUM = dp(40)
+            W_DAY = dp(46)
+            ROW_H = dp(36)
+            HEAD_TOP_H = dp(24)
+            HEAD_BOT_H = dp(120)
+
+            max_name_w = dp(190)
+            max_pos_w  = dp(150)
+            for emp in employees:
+                nm_w = measure_text_width(emp.get('name', ''), font_size=14)
+                ps_w = measure_text_width(emp.get('position', ''), font_size=14)
+                if nm_w + dp(24) > max_name_w:
+                    max_name_w = nm_w + dp(24)
+                if ps_w + dp(24) > max_pos_w:
+                    max_pos_w = ps_w + dp(24)
+            max_name_w = min(max_name_w, dp(500))
+            max_pos_w  = min(max_pos_w,  dp(400))
+
+            W_NAME = max_name_w
+            W_POS  = max_pos_w
+
+            LEFT_W  = W_NUM + W_NAME + W_POS
+            RIGHT_W = sum(w for _, _, w in RIGHT_COLUMNS)
+            DAYS_W  = days_in_month * W_DAY
+
+            BORDER_BLACK = (0, 0, 0, 1)
+            LINE_T = 1
+
+            # ---- Верхняя полоса ----------------------------------------
+            header_strip = BoxLayout(orientation='horizontal',
+                                     size_hint_y=None, height=HEAD_TOP_H,
+                                     spacing=0)
+
+            def _spacer_bg(w):
+                b = BoxLayout(size_hint=(None, 1), width=w, spacing=0)
+                with b.canvas.before:
+                    Color(*HEADER_BG)
+                    _r = Rectangle(pos=b.pos, size=b.size)
+                b.bind(pos=lambda i, v, r=_r: setattr(r, 'pos', v),
+                       size=lambda i, v, r=_r: setattr(r, 'size', v))
+                return b
+
+            s_num = _spacer_bg(W_NUM)
+            add_left_border(s_num, color=BORDER_BLACK, thickness=LINE_T)
+            add_right_border(s_num, color=BORDER_BLACK, thickness=LINE_T)
+            header_strip.add_widget(s_num)
+
+            s_name = _spacer_bg(W_NAME)
+            add_right_border(s_name, color=BORDER_BLACK, thickness=LINE_T)
+            header_strip.add_widget(s_name)
+
+            s_pos = _spacer_bg(W_POS)
+            add_right_border(s_pos, color=BORDER_BLACK, thickness=LINE_T)
+            header_strip.add_widget(s_pos)
+
+            c_holder = BoxLayout(size_hint=(1, 1))
+            with c_holder.canvas.before:
+                Color(*HEADER_BG)
+                _ch = Rectangle(pos=c_holder.pos, size=c_holder.size)
+            c_holder.bind(pos=lambda i, v, r=_ch: setattr(r, 'pos', v),
+                          size=lambda i, v, r=_ch: setattr(r, 'size', v))
+            c_lbl = Label(text="Числа месяца", bold=True, color=HEADER_FG,
+                          font_size=dp(11), halign='center', valign='middle',
+                          font_name=FONT_NAME)
+            c_lbl.bind(size=lambda i, v: setattr(i, 'text_size', v))
+            c_holder.add_widget(c_lbl)
+            header_strip.add_widget(c_holder)
+
+            w_days_att = RIGHT_COLUMNS[0][2] + RIGHT_COLUMNS[1][2]
+            w_days_abs = sum(RIGHT_COLUMNS[i][2] for i in range(2, 11))
+            w_work     = sum(RIGHT_COLUMNS[i][2] for i in range(11, 15))
+
+            right_top = BoxLayout(size_hint=(None, 1), width=RIGHT_W, spacing=0)
+            add_left_border(right_top, color=BORDER_BLACK, thickness=LINE_T)
+            right_top.add_widget(self._lbl_bg("Дни явок",
+                                               w_days_att - 1, HEAD_TOP_H))
+            right_top.add_widget(vsep(color=BORDER_BLACK, thickness=LINE_T))
+            right_top.add_widget(self._lbl_bg("Дни неявок",
+                                               w_days_abs - 1, HEAD_TOP_H))
+            right_top.add_widget(vsep(color=BORDER_BLACK, thickness=LINE_T))
+            right_top.add_widget(self._lbl_bg("Отработано часов",
+                                               w_work, HEAD_TOP_H))
+            header_strip.add_widget(right_top)
+
+            add_bottom_border(c_holder, color=BORDER_BLACK, thickness=LINE_T)
+            add_bottom_border(right_top, color=BORDER_BLACK, thickness=LINE_T)
+
+            self.main_container.add_widget(header_strip)
+
+            # ---- Тело --------------------------------------------------
+            body = BoxLayout(orientation='horizontal', spacing=0)
+
+            # левая панель
+            left_sv = ScrollView(do_scroll_x=False, do_scroll_y=True,
+                                 size_hint=(None, 1), width=LEFT_W,
+                                 bar_width=dp(8), scroll_type=['bars'],
+                                 effect_cls='ScrollEffect')
+            left_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
+            left_grid.bind(minimum_height=left_grid.setter('height'))
+            left_grid.width = LEFT_W
+
+            lh = BoxLayout(size_hint=(None, None),
+                            size=(LEFT_W, HEAD_BOT_H), spacing=0)
+            c = self._lbl_bg("№", W_NUM, HEAD_BOT_H)
+            add_left_border(c, color=BORDER_BLACK, thickness=LINE_T)
+            add_right_border(c, color=BORDER_BLACK, thickness=LINE_T)
+            lh.add_widget(c)
+            c = self._lbl_bg("Фамилия Имя Отчество", W_NAME, HEAD_BOT_H)
+            add_right_border(c, color=BORDER_BLACK, thickness=LINE_T)
+            lh.add_widget(c)
+            c = self._lbl_bg("Должность", W_POS, HEAD_BOT_H)
+            add_right_border(c, color=BORDER_BLACK, thickness=LINE_T)
+            lh.add_widget(c)
+            add_bottom_border(lh, color=BORDER_BLACK, thickness=LINE_T)
+            left_grid.add_widget(lh)
+
+            for idx, emp in enumerate(employees):
+                r = BoxLayout(size_hint=(None, None),
+                              size=(LEFT_W, ROW_H), spacing=0)
+                num_lbl = self._lbl(str(idx + 1), W_NUM, ROW_H)
+                add_left_border(num_lbl, color=BORDER_BLACK, thickness=LINE_T)
+                add_right_border(num_lbl, color=BORDER_BLACK, thickness=LINE_T)
+                r.add_widget(num_lbl)
+
+                name_lbl = self._lbl(emp.get('name', ''),
+                                      W_NAME, ROW_H, align_left=True)
+                add_right_border(name_lbl, color=BORDER_BLACK, thickness=LINE_T)
+                r.add_widget(name_lbl)
+
+                pos_lbl = self._lbl(emp.get('position', ''),
+                                     W_POS, ROW_H, align_left=True)
+                add_right_border(pos_lbl, color=BORDER_BLACK, thickness=LINE_T)
+                r.add_widget(pos_lbl)
+
+                add_bottom_border(r)
+                left_grid.add_widget(r)
+            left_sv.add_widget(left_grid)
+            body.add_widget(left_sv)
+
+            # центральная панель с днями
+            days_sv = HorizontalScrollView(do_scroll_x=True, do_scroll_y=True,
+                                            bar_width=dp(10),
+                                            scroll_type=['bars', 'content'],
+                                            effect_cls='ScrollEffect')
+            days_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
+            days_grid.bind(minimum_height=days_grid.setter('height'))
+            days_grid.bind(minimum_width=days_grid.setter('width'))
+
+            dh = BoxLayout(size_hint=(None, None),
+                            size=(DAYS_W, HEAD_BOT_H), spacing=0)
+            for i, dt in enumerate(day_types):
+                wd_idx = date(y, m, i + 1).weekday()
+                dh.add_widget(DayHeader(i + 1, day_type=dt,
+                                         weekday_idx=wd_idx,
+                                         show_right=True,
+                                         size_hint=(None, None),
+                                         size=(W_DAY, HEAD_BOT_H)))
+            add_bottom_border(dh, color=BORDER_BLACK, thickness=LINE_T)
+            days_grid.add_widget(dh)
+
+            for emp in employees:
+                emp_id = emp['id']
+                r = BoxLayout(size_hint=(None, None),
+                              size=(DAYS_W, ROW_H), spacing=0)
+                day_values = ts.get(emp_id, {})
+                cells = []
+                for d in range(1, days_in_month + 1):
+                    cell = DayCell(text=str(day_values.get(str(d), '')),
+                                    day_type=day_types[d - 1],
+                                    show_right=True,
+                                    size_hint=(None, None),
+                                    size=(W_DAY, ROW_H))
+                    cell.input.bind(text=lambda inst, val, eid=emp_id:
+                                    self._on_day_change(eid))
+                    r.add_widget(cell)
+                    cells.append(cell)
+                add_bottom_border(r)
+                self.day_inputs[emp_id] = cells
+                days_grid.add_widget(r)
+            days_sv.add_widget(days_grid)
+            body.add_widget(days_sv)
+
+            # правая панель итогов
+            right_sv = ScrollView(do_scroll_x=False, do_scroll_y=True,
+                                  size_hint=(None, 1), width=RIGHT_W,
+                                  bar_width=dp(8), scroll_type=['bars'],
+                                  effect_cls='ScrollEffect')
+            right_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
+            right_grid.bind(minimum_height=right_grid.setter('height'))
+            right_grid.width = RIGHT_W
+
+            rh = BoxLayout(size_hint=(None, None),
+                            size=(RIGHT_W, HEAD_BOT_H), spacing=0)
+            for i, (label, key_, w) in enumerate(RIGHT_COLUMNS):
+                last = (i == len(RIGHT_COLUMNS) - 1)
+                vl = VerticalLabel(text=label,
+                                    font_size=9,
+                                    pad_top=6,
+                                    size_hint=(None, None),
+                                    size=(w if last else w - LINE_T, HEAD_BOT_H))
+                if i == 0:
+                    add_left_border(vl, color=BORDER_BLACK, thickness=LINE_T)
+                rh.add_widget(vl)
+                if not last:
+                    rh.add_widget(vsep(color=BORDER_BLACK, thickness=LINE_T))
+            add_bottom_border(rh, color=BORDER_BLACK, thickness=LINE_T)
+            right_grid.add_widget(rh)
+
+            for emp in employees:
+                emp_id = emp['id']
+                r = BoxLayout(size_hint=(None, None),
+                              size=(RIGHT_W, ROW_H), spacing=0)
+                labels = {}
+                last_i = len(RIGHT_COLUMNS) - 1
+                for i, (_, key_, w) in enumerate(RIGHT_COLUMNS):
+                    cell = ResultCell(
+                        text='0', fg_color=LABEL_LIGHT,
+                        show_left=(i == 0),
+                        show_right=(i < last_i),
+                        border_color=BORDER_BLACK, border_th=LINE_T,
+                        size_hint=(None, None), size=(w, ROW_H),
+                    )
+                    cell.input.bind(
+                        text=lambda inst, val, eid=emp_id, k=key_:
+                            self._on_result_change(eid, k, val),
+                        focus=lambda inst, val, eid=emp_id, k=key_:
+                            self._on_result_focus(eid, k, val),
+                    )
+                    cell.input.bind(
+                        on_text_validate=lambda inst, eid=emp_id, k=key_:
+                            self._commit_one(eid, k)
+                    )
+                    r.add_widget(cell)
+                    labels[key_] = cell
+                self.total_labels[emp_id] = labels
+                add_bottom_border(r)
+                right_grid.add_widget(r)
+            right_sv.add_widget(right_grid)
+            body.add_widget(right_sv)
+
+            self.main_container.add_widget(body)
+            sync_vertical([left_sv, days_sv, right_sv])
+
+            for emp_id in list(self.day_inputs.keys()):
+                self._recalc_totals(emp_id)
+
+            self._last_key = key
+
+        finally:
+            self._loading = False
+
+    # ---------------- вспомогательные ------------------------------------
+    @staticmethod
+    def _lbl(text, w, h, bold=False, align_left=False):
+        lbl = Label(text=text, bold=bold,
+                    size_hint=(None, None), size=(w, h),
+                    color=LABEL_LIGHT,
+                    font_name=FONT_NAME, font_size=dp(14),
+                    halign='left' if align_left else 'center',
+                    valign='middle')
+        if align_left:
+            lbl.bind(size=lambda inst, val: setattr(
+                inst, 'text_size', (val[0] - 6, val[1])))
+        return lbl
+
+    @staticmethod
+    def _lbl_bg(text, w, h):
+        holder = BoxLayout(size_hint=(None, None), size=(w, h))
+        with holder.canvas.before:
+            Color(*HEADER_BG)
+            rect = Rectangle(pos=holder.pos, size=holder.size)
+        holder.bind(pos=lambda inst, val: setattr(rect, 'pos', val),
+                    size=lambda inst, val: setattr(rect, 'size', val))
+        holder.add_widget(Label(text=text, bold=True, color=HEADER_FG,
+                                 font_name=FONT_NAME,
+                                 font_size=dp(11),
+                                 halign='center', valign='middle'))
+        return holder
+
+    def _commit_one(self, emp_id, col_key):
+        cell = self.total_labels.get(emp_id, {}).get(col_key)
+        if cell is None:
+            return
+        txt = cell.input.text.strip()
+        emp_over = self._get_overrides().setdefault(emp_id, {})
+        if txt == '':
+            emp_over.pop(col_key, None)
+        else:
+            emp_over[col_key] = txt
+        cell.input.focus = False
+        self._schedule_save()
+        self._recalc_totals(emp_id)
+
+    def _recalc_totals(self, emp_id):
+        cells = self.day_inputs.get(emp_id, [])
+        values = [c.input.text for c in cells]
+        night_on = self._emp_night.get(emp_id, False)
+        overtime_on = self._emp_overtime.get(emp_id, False)
+        holiday_on = self._emp_holiday.get(emp_id, True)
+        res = analyze_row(values, self._day_types, night_on, holiday_on)
+        if overtime_on:
+            apply_overtime(res, self._get_norm_hours())
+        else:
+            res['сверхурочные'] = 0.0
+
+        overrides = (self.app.data.get('result_overrides', {})
+                     .get(self._get_key(), {})
+                     .get(emp_id, {}))
+
+        labels = self.total_labels.get(emp_id, {})
+        self._suppress_result_cb = True
+        try:
+            for k, cell in labels.items():
+                if cell.input.focused:
+                    continue
+                if k in overrides:
+                    new_text = str(overrides[k])
+                else:
+                    val = res.get(k, 0)
+                    if k in ('часы', 'сверхурочные', 'ночные', 'праздничные'):
+                        new_text = fmt_hours(val)
+                    else:
+                        new_text = str(val)
+                if cell.input.text != new_text:
+                    cell.text = new_text
+        finally:
+            self._suppress_result_cb = False
