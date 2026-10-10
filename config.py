@@ -49,11 +49,34 @@ Window.position = 'custom'
 # =========================================================================
 # ПУТИ
 # =========================================================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+def _data_dir():
+    """Папка для tabel_data.json — рядом с .exe (frozen) или с .py (скрипт)."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _assets_dir():
+    """Папка с ресурсами: временная у PyInstaller, обычная у скрипта."""
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        return meipass
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+BASE_DIR = _data_dir()
 DATA_FILE = os.path.join(BASE_DIR, "tabel_data.json")
 
-ICON_PATH = os.path.join(BASE_DIR, "ico", "tabel.ico")
-ICON_EMOJI = "📋"
+# Иконку ищем сначала внутри ресурсов PyInstaller, потом рядом с программой.
+_icon_candidates = [
+    os.path.join(_assets_dir(), "ico", "tabel.ico"),
+    os.path.join(BASE_DIR, "ico", "tabel.ico"),
+]
+ICON_PATH = next(
+    (p for p in _icon_candidates if os.path.isfile(p)),
+    _icon_candidates[0],
+)
+ICON_EMOJI = "[T]"      # ASCII-маркер в заголовке, если нет ico/tabel.ico
 
 # =========================================================================
 # ДАННЫЕ ПО УМОЛЧАНИЮ
@@ -67,6 +90,8 @@ WEEKDAYS_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 DEFAULT_POSITIONS = ["электромонтер", "оператор котельной"]
 DEFAULT_DEPARTMENTS = ["ЭНЕРГОСЛУЖБА"]
 DEFAULT_ORG = 'ОАО "Компания "МогНат"'
+DEFAULT_ENERGETIC = "Борщенков С.В."
+DEFAULT_DIRECTOR = "Авчинников С. А."
 
 HOLIDAYS = {
     (1, 1), (1, 7), (2, 23), (3, 8), (5, 1),

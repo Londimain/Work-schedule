@@ -17,8 +17,23 @@
     ico/tabel.ico     — иконка (необязательно)
 """
 import config  # noqa: F401 — ВАЖНО: настройка Kivy + шрифт
-
+# main.py
+# -*- coding: utf-8 -*-
+"""Точка входа приложения «Табель учёта рабочего времени»."""
+import sys
 import os
+
+# --- ВАЖНО для собранного .exe: вернуть _MEIPASS в начало sys.path ---
+if getattr(sys, 'frozen', False):
+    _meipass = getattr(sys, '_MEIPASS', None)
+    if _meipass and os.path.isdir(_meipass):
+        # если путь уже есть — убираем, чтобы вставить в начало
+        while _meipass in sys.path:
+            sys.path.remove(_meipass)
+        sys.path.insert(0, _meipass)
+
+import config  # noqa: F401 — настройка Kivy + шрифт
+# дальше — весь остальной файл как было
 import platform
 
 from kivy.app import App

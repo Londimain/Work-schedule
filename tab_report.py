@@ -9,6 +9,7 @@ from calendar import monthrange
 from datetime import datetime, date
 
 from kivy.metrics import dp
+from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
@@ -23,13 +24,20 @@ try:
     from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
     from openpyxl.utils import get_column_letter
     HAS_OPENPYXL = True
-except ImportError:
+    OPENPYXL_ERR = ""
+except Exception as _e:
     HAS_OPENPYXL = False
+    OPENPYXL_ERR = f"{type(_e).__name__}: {_e}"
+    import traceback
+    OPENPYXL_ERR += "\n\n" + traceback.format_exc()
 
 from config import (FONT_NAME, LABEL_LIGHT, MONTHS, YEARS,
                     SPINNER_BG, SPINNER_FG, RIGHT_COLUMNS,
-                    WEEKDAYS_SHORT, DEFAULT_ORG, BASE_DIR)
-from data_utils import (classify_day, analyze_row, apply_overtime, fmt_hours)
+                    WEEKDAYS_SHORT, DEFAULT_ORG, BASE_DIR,
+                    DEFAULT_ENERGETIC, DEFAULT_DIRECTOR)
+from data_utils import (save_data, classify_day, analyze_row,
+                        apply_overtime, fmt_hours)
+from ui_widgets import CenteredField
 
 
 class ReportTab(BoxLayout):
@@ -59,6 +67,15 @@ class ReportTab(BoxLayout):
                                     background_color=SPINNER_BG, color=SPINNER_FG)
         top.add_widget(self.year_spinner)
         top.add_widget(Widget())
+
+        # Кнопка «Подписи» — открывает редактор ФИО Энергетика и Директора
+        sign_btn = Button(text="Подписи",
+                          size_hint_x=None, width=dp(140),
+                          font_name=FONT_NAME, font_size=dp(15), bold=True,
+                          background_color=(0.45, 0.40, 0.65, 1),
+                          color=(1, 1, 1, 1))
+        sign_btn.bind(on_press=lambda *a: self.show_signatures_popup())
+        top.add_widget(sign_btn)
 
         excel_btn = Button(text="Сохранить в Excel",
                            size_hint_x=None, width=dp(200),
@@ -90,6 +107,83 @@ class ReportTab(BoxLayout):
         self.preview.bind(texture_size=self.preview.setter('size'))
         scroll.add_widget(self.preview)
         self.add_widget(scroll)
+
+    # ---------------- редактор подписей ----------------------------------
+    def show_signatures_popup(self):
+        energetic = self.app.data.get('energetic_name', DEFAULT_ENERGETIC)
+        director = self.app.data.get('director_name', DEFAULT_DIRECTOR)
+
+        content = BoxLayout(orientation='vertical', spacing=10, padding=12)
+
+        # ---------------- растяжка сверху ----------------
+        content.add_widget(Widget(size_hint_y=1))
+
+        # ---------------- поля (по центру) ----------------
+        # Ограничиваем общую ширину блока полей
+        center_holder = AnchorLayout(anchor_x='center', anchor_y='center')
+        fields = BoxLayout(orientation='vertical', spacing=10,
+                           size_hint=(None, None),
+                           width=dp(560),
+                           height=dp(100))
+
+        row_en = BoxLayout(size_hint_y=None, height=dp(44), spacing=8)
+        row_en.add_widget(Label(text="Энергетик:", size_hint_x=0.42,
+                                color=LABEL_LIGHT, font_name=FONT_NAME,
+                                font_size=dp(15), halign='right',
+                                valign='middle',
+                                text_size=(dp(150), dp(44))))
+        en_wrap = CenteredField(text=energetic, font_size=dp(15),
+                                pad_lr=dp(10), halign='left')
+        en_wrap.size_hint_x = 0.58
+        row_en.add_widget(en_wrap)
+        fields.add_widget(row_en)
+
+        row_dir = BoxLayout(size_hint_y=None, height=dp(44), spacing=8)
+        row_dir.add_widget(Label(text="Директор:", size_hint_x=0.42,
+                                 color=LABEL_LIGHT, font_name=FONT_NAME,
+                                 font_size=dp(15), halign='right',
+                                 valign='middle',
+                                 text_size=(dp(150), dp(44))))
+        dir_wrap = CenteredField(text=director, font_size=dp(15),
+                                 pad_lr=dp(10), halign='left')
+        dir_wrap.size_hint_x = 0.58
+        row_dir.add_widget(dir_wrap)
+        fields.add_widget(row_dir)
+
+        center_holder.add_widget(fields)
+        content.add_widget(center_holder)
+
+        # ---------------- растяжка снизу ----------------
+        content.add_widget(Widget(size_hint_y=1))
+
+        # ---------------- кнопки (внизу) ----------------
+        btns = BoxLayout(size_hint_y=None, height=dp(44), spacing=10)
+        save_btn = Button(text="Сохранить",
+                          background_color=(0.3, 0.7, 0.3, 1),
+                          color=(1, 1, 1, 1), font_name=FONT_NAME,
+                          font_size=dp(16), bold=True)
+        cancel_btn = Button(text="Отмена", color=(1, 1, 1, 1),
+                            font_name=FONT_NAME, font_size=dp(16), bold=True)
+        btns.add_widget(save_btn)
+        btns.add_widget(cancel_btn)
+        content.add_widget(btns)
+
+        popup = Popup(title="Подписи в отчёте", content=content,
+                      size_hint=(0.6, 0.5),
+                      title_color=LABEL_LIGHT, title_font=FONT_NAME)
+
+        def on_save(*a):
+            self.app.data['energetic_name'] = (
+                en_wrap.text.strip() or DEFAULT_ENERGETIC)
+            self.app.data['director_name'] = (
+                dir_wrap.text.strip() or DEFAULT_DIRECTOR)
+            save_data(self.app.data)
+            popup.dismiss()
+            self.update_preview()
+
+        save_btn.bind(on_press=on_save)
+        cancel_btn.bind(on_press=popup.dismiss)
+        popup.open()
 
     # ---------------- вспомогательные ------------------------------------
     def _employees_for_report(self):
@@ -132,7 +226,7 @@ class ReportTab(BoxLayout):
             pos_name = emp.get('position', '')
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
-            holiday_on = bool(holiday_flags.get(pos_name, True))
+            holiday_on = bool(holiday_flags.get(pos_name, False))
             res = analyze_row(values, day_types, night_on, holiday_on)
             if overtime_on:
                 apply_overtime(res, norm_hours)
@@ -161,6 +255,8 @@ class ReportTab(BoxLayout):
         overtime_flags = self.app.data.get('overtime_flags', {})
         holiday_flags = self.app.data.get('holiday_flags', {})
         org = self.app.data.get('organization', DEFAULT_ORG)
+        energetic_name = self.app.data.get('energetic_name', DEFAULT_ENERGETIC)
+        director_name = self.app.data.get('director_name', DEFAULT_DIRECTOR)
         dept = self._get_dept()
 
         if not employees:
@@ -193,6 +289,8 @@ class ReportTab(BoxLayout):
             f"Сверхурочные: {fmt_hours(grand.get('сверхурочные', 0))}    "
             f"Ночные: {fmt_hours(grand.get('ночные', 0))}    "
             f"Праздничные: {fmt_hours(grand.get('праздничные', 0))}",
+            f"  Подписи: Энергетик — {energetic_name}    "
+            f"Директор — {director_name}",
             sep,
             "",
             "  По сотрудникам:",
@@ -209,7 +307,7 @@ class ReportTab(BoxLayout):
             pos_name = emp.get('position', '')
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
-            holiday_on = bool(holiday_flags.get(pos_name, True))
+            holiday_on = bool(holiday_flags.get(pos_name, False))
             res = analyze_row(values, day_types, night_on, holiday_on)
             if overtime_on:
                 apply_overtime(res, norm_hours)
@@ -231,15 +329,27 @@ class ReportTab(BoxLayout):
     # ---------------- экспорт в Excel ------------------------------------
     def save_excel(self, *a):
         if not HAS_OPENPYXL:
-            popup = Popup(
-                title="Нужен openpyxl",
-                content=Label(
-                    text="Установите библиотеку:\n\npip install openpyxl",
-                    color=LABEL_LIGHT, halign='center',
-                    font_name=FONT_NAME, font_size=dp(15),
-                    outline_color=(0, 0, 0, 1), outline_width=1),
-                size_hint=(0.5, 0.3), title_color=LABEL_LIGHT,
-                title_font=FONT_NAME)
+            from kivy.uix.scrollview import ScrollView as _SV
+            msg = ("Не удалось загрузить openpyxl в собранной программе.\n\n"
+                   "Техническая информация:\n"
+                   f"{OPENPYXL_ERR}")
+            inner = BoxLayout(orientation='vertical', spacing=8, padding=8)
+            sv = _SV()
+            lbl = Label(text=msg, color=LABEL_LIGHT, halign='left',
+                        valign='top', font_name=FONT_NAME, font_size=dp(13))
+            lbl.bind(width=lambda i, v: setattr(i, 'text_size', (v, None)))
+            lbl.bind(texture_size=lbl.setter('size'))
+            sv.add_widget(lbl)
+            inner.add_widget(sv)
+            ok_btn = Button(text="OK", size_hint_y=None, height=dp(40),
+                            font_name=FONT_NAME, font_size=dp(16), bold=True,
+                            background_color=(0.3, 0.7, 0.3, 1),
+                            color=(1, 1, 1, 1))
+            inner.add_widget(ok_btn)
+            popup = Popup(title="Нужен openpyxl", content=inner,
+                          size_hint=(0.85, 0.55),
+                          title_color=LABEL_LIGHT, title_font=FONT_NAME)
+            ok_btn.bind(on_press=popup.dismiss)
             popup.open()
             return
 
@@ -253,6 +363,8 @@ class ReportTab(BoxLayout):
         overtime_flags = self.app.data.get('overtime_flags', {})
         holiday_flags = self.app.data.get('holiday_flags', {})
         org = self.app.data.get('organization', DEFAULT_ORG)
+        energetic_name = self.app.data.get('energetic_name', DEFAULT_ENERGETIC)
+        director_name = self.app.data.get('director_name', DEFAULT_DIRECTOR)
         dept = self._get_dept()
 
         day_types = [classify_day(y, m, d)
@@ -367,7 +479,7 @@ class ReportTab(BoxLayout):
             pos_name = emp.get('position', '')
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
-            holiday_on = bool(holiday_flags.get(pos_name, True))
+            holiday_on = bool(holiday_flags.get(pos_name, False))
             res = analyze_row(values, day_types, night_on, holiday_on)
             if overtime_on:
                 apply_overtime(res, norm_hours)
@@ -460,10 +572,11 @@ class ReportTab(BoxLayout):
 
         row += 5
 
+        # --- Подписи (используем сохранённые ФИО) ---
         ws.merge_cells(start_row=row, start_column=3,
                        end_row=row, end_column=18)
         c = ws.cell(row=row, column=3,
-                    value="Энергетик  ____________  Борщенков С.В.")
+                    value=f"Энергетик  ____________  {energetic_name}")
         c.font = Font(size=11)
         c.alignment = Alignment(horizontal='center', vertical='center')
 
@@ -471,7 +584,7 @@ class ReportTab(BoxLayout):
         ws.merge_cells(start_row=row, start_column=mid,
                        end_row=row, end_column=mid + 12)
         c = ws.cell(row=row, column=mid,
-                    value="Директор  ____________  С. А. Авчинников")
+                    value=f"Директор  ____________  {director_name}")
         c.font = Font(size=11)
         c.alignment = Alignment(horizontal='center', vertical='center')
 

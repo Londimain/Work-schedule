@@ -7,8 +7,8 @@ from datetime import date
 
 from config import (DATA_FILE, RIGHT_COLUMNS, CODES,
                     DEFAULT_POSITIONS, DEFAULT_DEPARTMENTS,
-                    DEFAULT_ORG, HOLIDAYS)
-
+                    DEFAULT_ORG, HOLIDAYS,
+                    DEFAULT_ENERGETIC, DEFAULT_DIRECTOR)
 _LAST_MTIME = 0.0
 
 
@@ -35,6 +35,8 @@ def load_data():
                 data.setdefault('holiday_flags', {})
                 data.setdefault('departments', list(DEFAULT_DEPARTMENTS))
                 data.setdefault('organization', DEFAULT_ORG)
+                data.setdefault('energetic_name', DEFAULT_ENERGETIC)
+                data.setdefault('director_name', DEFAULT_DIRECTOR)
                 for emp in data['employees']:
                     emp.setdefault('department', '')
                     emp.setdefault('show_in_timesheet', True)
@@ -47,8 +49,9 @@ def load_data():
             "overtime_flags": {},
             "holiday_flags": {},
             "departments": list(DEFAULT_DEPARTMENTS),
-            "organization": DEFAULT_ORG}
-
+            "organization": DEFAULT_ORG,
+            "energetic_name": DEFAULT_ENERGETIC,
+            "director_name": DEFAULT_DIRECTOR}
 
 def save_data(data):
     global _LAST_MTIME
@@ -87,7 +90,7 @@ def calc_night_hours(h):
     return 0
 
 
-def analyze_row(values, day_types, night_enabled=False, holiday_enabled=True):
+def analyze_row(values, day_types, night_enabled=False, holiday_enabled=False):
     res = {key: 0 for _, key, _ in RIGHT_COLUMNS}
     res['часы'] = 0.0
     res['сверхурочные'] = 0.0

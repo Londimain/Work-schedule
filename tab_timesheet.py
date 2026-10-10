@@ -29,6 +29,19 @@ from ui_helpers import (add_bottom_border, add_left_border, add_right_border,
 from ui_widgets import (VerticalLabel, DayCell, ResultCell, DayHeader)
 
 
+def _stretch_grid(grid, sv):
+    """Grid должен быть не меньше ScrollView по высоте,
+    иначе Kivy прижимает содержимое к низу окна просмотра."""
+    def _sync(*_):
+        try:
+            grid.height = max(grid.minimum_height, sv.height)
+        except Exception:
+            pass
+    grid.bind(minimum_height=_sync)
+    sv.bind(height=_sync)
+    Clock.schedule_once(_sync, 0)
+
+
 class TimesheetTab(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
@@ -43,6 +56,10 @@ class TimesheetTab(BoxLayout):
         self._emp_overtime = {}
         self._emp_holiday = {}
         self._suppress_result_cb = False
+        self._employees_order = []
+        self._days_sv = None
+        self._right_sv = None
+        self._days_in_month = 0
         self._build()
 
     def _build(self):
@@ -74,7 +91,7 @@ class TimesheetTab(BoxLayout):
                            color=(1, 1, 1, 1))
         apply_btn.bind(on_press=lambda *a: self.apply_overrides())
         top.add_widget(apply_btn)
-        
+
         reset_btn = Button(text="Сбросить правки",
                            size_hint_x=None, width=dp(170),
                            font_name=FONT_NAME, font_size=dp(15), bold=True,
@@ -145,6 +162,278 @@ class TimesheetTab(BoxLayout):
     def _employees_for_ts(self):
         return [emp for emp in self.app.data['employees']
                 if emp.get('show_in_timesheet', True)]
+
+    # ---------------- навигация ------------------------------------------
+    def _make_day_nav_callback(self, emp_id, day_idx):
+        """day_idx: 1-based (день месяца)."""
+        def cb(key, modifiers):
+            return self._handle_day_nav(emp_id, day_idx, key, modifiers)
+        return cb
+
+    def _make_result_nav_callback(self, emp_id, col_idx):
+        """col_idx: 0-based (индекс в RIGHT_COLUMNS)."""
+        def cb(key, modifiers):
+            return self._handle_result_nav(emp_id, col_idx, key, modifiers)
+        return cb
+
+    # ------ обработчики клавиш -------------------------------------------
+    def _handle_day_nav(self, emp_id, day_idx, key, modifiers):
+        shift = 'shift' in (modifiers or [])
+
+        if key == 9:  # Tab
+            if shift:
+                self._focus_prev_day(emp_id, day_idx)
+            else:
+                self._focus_next_day(emp_id, day_idx)
+            return True
+
+        if key == 275:  # Right
+            cell = self._get_day_cell(emp_id, day_idx)
+            if cell is not None:
+                try:
+                    if cell.input.cursor_index() >= len(cell.input.text):
+                        return self._focus_next_day(emp_id, day_idx)
+                except Exception:
+                    pass
+            return False
+
+        if key == 276:  # Left
+            cell = self._get_day_cell(emp_id, day_idx)
+            if cell is not None:
+                try:
+                    if cell.input.cursor_index() <= 0:
+                        return self._focus_prev_day(emp_id, day_idx)
+                except Exception:
+                    pass
+            return False
+
+        if key == 274:  # Down
+            return self._focus_row_down_day(emp_id, day_idx)
+        if key == 273:  # Up
+            return self._focus_row_up_day(emp_id, day_idx)
+        return False
+
+    def _handle_result_nav(self, emp_id, col_idx, key, modifiers):
+        shift = 'shift' in (modifiers or [])
+
+        if key == 9:  # Tab
+            if shift:
+                self._focus_result_prev(emp_id, col_idx)
+            else:
+                self._focus_result_next(emp_id, col_idx)
+            return True
+
+        if key == 275:  # Right
+            cell = self._get_result_cell(emp_id, col_idx)
+            if cell is not None:
+                try:
+                    if cell.input.cursor_index() >= len(cell.input.text):
+                        self._focus_result_next(emp_id, col_idx)
+                        return True
+                except Exception:
+                    pass
+            return False
+
+        if key == 276:  # Left
+            cell = self._get_result_cell(emp_id, col_idx)
+            if cell is not None:
+                try:
+                    if cell.input.cursor_index() <= 0:
+                        self._focus_result_prev(emp_id, col_idx)
+                        return True
+                except Exception:
+                    pass
+            return False
+
+        if key == 274:  # Down
+            return self._focus_result_row_down(emp_id, col_idx)
+        if key == 273:  # Up
+            return self._focus_result_row_up(emp_id, col_idx)
+        return False
+
+    # ------ day-cell навигация -------------------------------------------
+    def _get_day_cell(self, emp_id, day_idx):
+        cells = self.day_inputs.get(emp_id, [])
+        if 1 <= day_idx <= len(cells):
+            return cells[day_idx - 1]
+        return None
+
+    def _focus_next_day(self, emp_id, day_idx):
+        """Tab → следующий день. На последнем дне — первый результат
+        того же сотрудника."""
+        cells = self.day_inputs.get(emp_id, [])
+        if day_idx < len(cells):
+            self._focus_cell(cells[day_idx])  # 0-based
+            return True
+        return self._focus_result_first(emp_id)
+
+    def _focus_prev_day(self, emp_id, day_idx):
+        """Shift+Tab → предыдущий день. На первом дне — последний
+        результат предыдущего сотрудника."""
+        if day_idx > 1:
+            cells = self.day_inputs.get(emp_id, [])
+            if day_idx - 2 < len(cells):
+                self._focus_cell(cells[day_idx - 2])
+                return True
+        emps = self._employees_order
+        try:
+            ei = emps.index(emp_id)
+        except ValueError:
+            return False
+        if ei > 0:
+            return self._focus_result_last(emps[ei - 1])
+        return False
+
+    def _focus_row_down_day(self, emp_id, day_idx):
+        emps = self._employees_order
+        try:
+            ei = emps.index(emp_id)
+        except ValueError:
+            return False
+        if ei + 1 < len(emps):
+            next_cells = self.day_inputs.get(emps[ei + 1], [])
+            if day_idx <= len(next_cells):
+                self._focus_cell(next_cells[day_idx - 1])
+                return True
+        return False
+
+    def _focus_row_up_day(self, emp_id, day_idx):
+        emps = self._employees_order
+        try:
+            ei = emps.index(emp_id)
+        except ValueError:
+            return False
+        if ei > 0:
+            prev_cells = self.day_inputs.get(emps[ei - 1], [])
+            if day_idx <= len(prev_cells):
+                self._focus_cell(prev_cells[day_idx - 1])
+                return True
+        return False
+
+    # ------ result-cell навигация ----------------------------------------
+    def _get_result_cell(self, emp_id, col_idx):
+        if col_idx < 0 or col_idx >= len(RIGHT_COLUMNS):
+            return None
+        key_ = RIGHT_COLUMNS[col_idx][1]
+        return self.total_labels.get(emp_id, {}).get(key_)
+
+    def _focus_result_first(self, emp_id):
+        return self._focus_result_by_index(emp_id, 0)
+
+    def _focus_result_last(self, emp_id):
+        return self._focus_result_by_index(emp_id, len(RIGHT_COLUMNS) - 1)
+
+    def _focus_result_by_index(self, emp_id, col_idx):
+        cell = self._get_result_cell(emp_id, col_idx)
+        if cell is None:
+            return False
+        self._focus_result_cell(cell)
+        return True
+
+    def _focus_result_next(self, emp_id, col_idx):
+        """Tab → следующий результат. На последнем — первый день
+        следующего сотрудника."""
+        if col_idx + 1 < len(RIGHT_COLUMNS):
+            return self._focus_result_by_index(emp_id, col_idx + 1)
+        emps = self._employees_order
+        try:
+            ei = emps.index(emp_id)
+        except ValueError:
+            return False
+        if ei + 1 < len(emps):
+            next_cells = self.day_inputs.get(emps[ei + 1], [])
+            if next_cells:
+                self._focus_cell(next_cells[0])
+                return True
+        return False
+
+    def _focus_result_prev(self, emp_id, col_idx):
+        """Shift+Tab → предыдущий результат. На первом — последний день
+        того же сотрудника."""
+        if col_idx > 0:
+            return self._focus_result_by_index(emp_id, col_idx - 1)
+        cells = self.day_inputs.get(emp_id, [])
+        if cells:
+            self._focus_cell(cells[-1])
+            return True
+        return False
+
+    def _focus_result_row_down(self, emp_id, col_idx):
+        emps = self._employees_order
+        try:
+            ei = emps.index(emp_id)
+        except ValueError:
+            return False
+        if ei + 1 < len(emps):
+            return self._focus_result_by_index(emps[ei + 1], col_idx)
+        return False
+
+    def _focus_result_row_up(self, emp_id, col_idx):
+        emps = self._employees_order
+        try:
+            ei = emps.index(emp_id)
+        except ValueError:
+            return False
+        if ei > 0:
+            return self._focus_result_by_index(emps[ei - 1], col_idx)
+        return False
+
+    # ------ сам фокус -----------------------------------------------------
+    def _focus_cell(self, cell):
+        """Фокус на ячейке дня (с горизонтальной прокруткой)."""
+        try:
+            cell.input.focus = True
+            Clock.schedule_once(lambda dt: self._select_all_safe(cell), 0)
+            sv = self._days_sv
+            if sv is not None:
+                Clock.schedule_once(lambda dt: self._scroll_to_safe(sv, cell), 0)
+        except Exception:
+            pass
+
+    def _focus_result_cell(self, cell):
+        """Фокус на ячейке итогов (без автопрокрутки — вся панель
+        обычно помещается на экране, а вертикаль синхронизирована)."""
+        try:
+            cell.input.focus = True
+            Clock.schedule_once(lambda dt: self._select_all_safe(cell), 0)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _select_all_safe(cell):
+        try:
+            cell.input.select_all()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _scroll_to_safe(sv, cell):
+        """Прокрутка по горизонтали к ячейке. Вертикаль не трогаем."""
+        try:
+            if not sv.children:
+                return
+            grid = sv.children[0]
+            content_w = grid.width
+            view_w = sv.width
+            if content_w <= view_w or view_w <= 0:
+                return
+
+            cell_left = cell.x
+            cell_right = cell.x + cell.width
+
+            cur_x = sv.scroll_x * (content_w - view_w)
+            if cur_x <= cell_left and cell_right <= cur_x + view_w:
+                return
+
+            target_x = cell_left + cell.width / 2.0 - view_w / 2.0
+            max_x = content_w - view_w
+            if target_x < 0:
+                target_x = 0
+            if target_x > max_x:
+                target_x = max_x
+            sv.scroll_x = target_x / max_x
+        except Exception:
+            pass
 
     # ---------------- диалоги --------------------------------------------
     def confirm_clear(self):
@@ -270,6 +559,7 @@ class TimesheetTab(BoxLayout):
             y = int(self.year_spinner.text)
             m = MONTHS.index(self.month_spinner.text) + 1
             days_in_month = monthrange(y, m)[1]
+            self._days_in_month = days_in_month
             ts = self.app.data['timesheets'].setdefault(key, {})
 
             day_types = [classify_day(y, m, d)
@@ -283,11 +573,12 @@ class TimesheetTab(BoxLayout):
             self._emp_overtime = {}
             self._emp_holiday = {}
             employees = self._employees_for_ts()
+            self._employees_order = [emp['id'] for emp in employees]
             for emp in employees:
                 pos_name = emp.get('position', '')
                 self._emp_night[emp['id']] = bool(night_flags.get(pos_name, False))
                 self._emp_overtime[emp['id']] = bool(overtime_flags.get(pos_name, False))
-                self._emp_holiday[emp['id']] = bool(holiday_flags.get(pos_name, True))
+                self._emp_holiday[emp['id']] = bool(holiday_flags.get(pos_name, False))
 
             W_NUM = dp(40)
             W_DAY = dp(46)
@@ -387,8 +678,8 @@ class TimesheetTab(BoxLayout):
                                  bar_width=dp(8), scroll_type=['bars'],
                                  effect_cls='ScrollEffect')
             left_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
-            left_grid.bind(minimum_height=left_grid.setter('height'))
             left_grid.width = LEFT_W
+            _stretch_grid(left_grid, left_sv)
 
             lh = BoxLayout(size_hint=(None, None),
                             size=(LEFT_W, HEAD_BOT_H), spacing=0)
@@ -433,9 +724,10 @@ class TimesheetTab(BoxLayout):
                                             bar_width=dp(10),
                                             scroll_type=['bars', 'content'],
                                             effect_cls='ScrollEffect')
+            self._days_sv = days_sv
             days_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
-            days_grid.bind(minimum_height=days_grid.setter('height'))
             days_grid.bind(minimum_width=days_grid.setter('width'))
+            _stretch_grid(days_grid, days_sv)
 
             dh = BoxLayout(size_hint=(None, None),
                             size=(DAYS_W, HEAD_BOT_H), spacing=0)
@@ -456,9 +748,11 @@ class TimesheetTab(BoxLayout):
                 day_values = ts.get(emp_id, {})
                 cells = []
                 for d in range(1, days_in_month + 1):
+                    cb = self._make_day_nav_callback(emp_id, d)
                     cell = DayCell(text=str(day_values.get(str(d), '')),
                                     day_type=day_types[d - 1],
                                     show_right=True,
+                                    on_key_callback=cb,
                                     size_hint=(None, None),
                                     size=(W_DAY, ROW_H))
                     cell.input.bind(text=lambda inst, val, eid=emp_id:
@@ -476,9 +770,10 @@ class TimesheetTab(BoxLayout):
                                   size_hint=(None, 1), width=RIGHT_W,
                                   bar_width=dp(8), scroll_type=['bars'],
                                   effect_cls='ScrollEffect')
+            self._right_sv = right_sv
             right_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
-            right_grid.bind(minimum_height=right_grid.setter('height'))
             right_grid.width = RIGHT_W
+            _stretch_grid(right_grid, right_sv)
 
             rh = BoxLayout(size_hint=(None, None),
                             size=(RIGHT_W, HEAD_BOT_H), spacing=0)
@@ -504,12 +799,14 @@ class TimesheetTab(BoxLayout):
                 labels = {}
                 last_i = len(RIGHT_COLUMNS) - 1
                 for i, (_, key_, w) in enumerate(RIGHT_COLUMNS):
+                    cb = self._make_result_nav_callback(emp_id, i)
                     cell = ResultCell(
                         text='0', fg_color=LABEL_LIGHT,
                         show_left=(i == 0),
                         show_right=(i < last_i),
                         border_color=BORDER_BLACK, border_th=LINE_T,
                         size_hint=(None, None), size=(w, ROW_H),
+                        on_key_callback=cb,
                     )
                     cell.input.bind(
                         text=lambda inst, val, eid=emp_id, k=key_:
@@ -587,7 +884,7 @@ class TimesheetTab(BoxLayout):
         values = [c.input.text for c in cells]
         night_on = self._emp_night.get(emp_id, False)
         overtime_on = self._emp_overtime.get(emp_id, False)
-        holiday_on = self._emp_holiday.get(emp_id, True)
+        holiday_on = self._emp_holiday.get(emp_id, False)
         res = analyze_row(values, self._day_types, night_on, holiday_on)
         if overtime_on:
             apply_overtime(res, self._get_norm_hours())

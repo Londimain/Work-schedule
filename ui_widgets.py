@@ -24,9 +24,36 @@ from ui_helpers import add_left_border, add_right_border
 
 
 # ---------------------------------------------------------------------------
+class NavTextInput(TextInput):
+    """TextInput с поддержкой внешнего обработчика клавиш.
+
+    Если `nav_callback(key, modifiers)` вернёт True — событие считается
+    обработанным (для навигации по ячейкам). Иначе — обычная обработка.
+    """
+    nav_callback = None
+
+    def keyboard_on_key_down(self, window, keycode, text, modifiers):
+        cb = self.nav_callback
+        if cb is not None:
+            try:
+                # Совместимость с разными версиями Kivy:
+                # где-то приходит tuple (key, scancode), где-то только key.
+                if isinstance(keycode, (tuple, list)):
+                    key = keycode[0]
+                else:
+                    key = keycode
+                if cb(key, modifiers or []):
+                    return True
+            except Exception:
+                pass
+        return super().keyboard_on_key_down(window, keycode, text, modifiers)
+
+
+# ---------------------------------------------------------------------------
 class CenteredField(FloatLayout):
     def __init__(self, text='', font_size=dp(15),
                  pad_lr=dp(10), fg_color=LABEL_DARK, halign='center',
+                 on_key_callback=None,
                  **ti_kwargs):
         super().__init__()
         ti_kwargs.pop('valign', None)
@@ -38,15 +65,18 @@ class CenteredField(FloatLayout):
         self._pad_lr = int(round(pad_lr))
         self._cursor_on = True
 
-        self.input = TextInput(
+        self.input = NavTextInput(
             text=text, multiline=False, font_size=font_size,
             font_name=FONT_NAME,
             foreground_color=(0, 0, 0, 0),
             cursor_color=(0, 0, 0, 0), cursor_width=0,
+            cursor_blink=False,
+            selection_color=(0, 0, 0, 0),
             padding=[0, 0, 0, 0],
             use_bubble=False, use_handles=False,
             **ti_kwargs,
         )
+        self.input.nav_callback = on_key_callback
         self.add_widget(self.input)
         self.input.bind(text=self._on_text)
         self.input.bind(focus=self._on_focus)
@@ -268,7 +298,8 @@ class VerticalLabel(Widget):
 
 # ---------------------------------------------------------------------------
 class DayCell(BoxLayout):
-    def __init__(self, text='', day_type='work', show_right=True, **kwargs):
+    def __init__(self, text='', day_type='work', show_right=True,
+                 on_key_callback=None, **kwargs):
         super().__init__(orientation='horizontal', **kwargs)
         if day_type == 'holiday':
             bg, fg = HOLIDAY_BG, HOLIDAY_FG
@@ -287,6 +318,7 @@ class DayCell(BoxLayout):
             halign='center', fg_color=fg,
             background_color=(0, 0, 0, 0),
             background_normal='', background_active='',
+            on_key_callback=on_key_callback,
         )
         self.input = _w.input
         self.add_widget(_w)
@@ -299,7 +331,8 @@ class DayCell(BoxLayout):
 class ResultCell(BoxLayout):
     def __init__(self, text='0', fg_color=LABEL_LIGHT,
                  show_left=False, show_right=True,
-                 border_color=(0, 0, 0, 1), border_th=1, **kwargs):
+                 border_color=(0, 0, 0, 1), border_th=1,
+                 on_key_callback=None, **kwargs):
         super().__init__(orientation='horizontal', **kwargs)
         if show_left:
             add_left_border(self, color=border_color, thickness=border_th)
@@ -310,6 +343,7 @@ class ResultCell(BoxLayout):
             halign='center', fg_color=fg_color,
             background_color=(0, 0, 0, 0),
             background_normal='', background_active='',
+            on_key_callback=on_key_callback,
         )
         self.input = _w.input
         self._field = _w

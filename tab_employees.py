@@ -418,7 +418,7 @@ class EmployeesTab(BoxLayout):
 
         def toggle_holiday(name):
             flags = self.app.data.setdefault('holiday_flags', {})
-            flags[name] = not flags.get(name, True)
+            flags[name] = not flags.get(name, False)
             save_data(self.app.data)
             rebuild_list()
 
@@ -478,7 +478,7 @@ class EmployeesTab(BoxLayout):
                 flags_o[new_name] = old_flag_o
 
                 flags_h = self.app.data.setdefault('holiday_flags', {})
-                old_flag_h = flags_h.pop(old_name, True)
+                old_flag_h = flags_h.pop(old_name, False)
                 flags_h[new_name] = old_flag_h
 
                 for emp in self.app.data['employees']:
@@ -530,7 +530,7 @@ class EmployeesTab(BoxLayout):
                                                valign='middle'))
                 row.add_widget(overtime_box)
 
-                holiday_on = bool(self.app.data['holiday_flags'].get(p, True))
+                holiday_on = bool(self.app.data['holiday_flags'].get(p, False))
                 holiday_box = BoxLayout(size_hint_x=None, width=dp(170),
                                         spacing=4)
                 cb3 = CheckBox(active=holiday_on, size_hint_x=None, width=dp(30),
@@ -577,7 +577,7 @@ class EmployeesTab(BoxLayout):
             self.app.data['positions'].append(txt)
             self.app.data.setdefault('night_flags', {}).setdefault(txt, False)
             self.app.data.setdefault('overtime_flags', {}).setdefault(txt, False)
-            self.app.data.setdefault('holiday_flags', {}).setdefault(txt, True)
+            self.app.data.setdefault('holiday_flags', {}).setdefault(txt, False)
             save_data(self.app.data)
             new_pos_wrap.text = ''
             rebuild_list()
