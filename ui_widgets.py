@@ -25,27 +25,79 @@ from ui_helpers import add_left_border, add_right_border
 
 # ---------------------------------------------------------------------------
 class NavTextInput(TextInput):
-    """TextInput с поддержкой внешнего обработчика клавиш.
+    """TextInput с двумя внешними обработчиками:
+       - extra_key_callback(key, modifiers) — перехват Ctrl+C/V
+       - nav_callback(key, modifiers)       — навигация по ячейкам
+    Возврат True означает, что событие обработано и TextInput не должен
+    выполнять своё действие.
 
-    Если `nav_callback(key, modifiers)` вернёт True — событие считается
-    обработанным (для навигации по ячейкам). Иначе — обычная обработка.
+    Дополнительно:
+      • первый печатный символ после получения фокуса заменяет всё
+        содержимое ячейки (как в Excel) — реализовано в insert_text;
+      • при зажатом Shift касание поглощается: TextInput не получает
+        фокус и не рисует синий прямоугольник выделения поверх
+        фоновой подсветки ячейки (логика выделения диапазона —
+        на уровне вкладки «Табель»).
     """
     nav_callback = None
+    extra_key_callback = None
+    _just_focused = False
+
+    # Общий на все экземпляры флаг: зажат ли Shift.
+    # Обновляется вкладкой «Табель» (_on_win_key_down / _on_win_key_up).
+    shift_state = {'held': False}
+
+    def on_touch_down(self, touch):
+        if NavTextInput.shift_state['held'] and self.collide_point(*touch.pos):
+            # Shift+клик: касание поглощаем. Фон ячейки уже подсвечен
+            # через _on_cell_touch_down на уровне DayCell/ResultCell.
+            # Без фокуса не будет ни курсора, ни встроенного
+            # текстового выделения.
+            return True
+        return super().on_touch_down(touch)
+
+    def insert_text(self, substring, from_undo=False):
+        # Первый печатный символ после фокуса заменяет старое значение.
+        if self._just_focused and substring and not from_undo:
+            self._just_focused = False
+            if not self.selection_text:
+                # Очищаем поле, чтобы новый символ заменил всё,
+                # а не добавился к старому («1.85» → «3», а не «1.3»).
+                self.text = ''
+                try:
+                    self.cursor = (0, 0)
+                except Exception:
+                    pass
+        return super().insert_text(substring, from_undo=from_undo)
 
     def keyboard_on_key_down(self, window, keycode, text, modifiers):
-        cb = self.nav_callback
-        if cb is not None:
+        # Определяем числовой код клавиши
+        try:
+            if isinstance(keycode, (tuple, list)):
+                key = keycode[0]
+            else:
+                key = keycode
+        except Exception:
+            key = None
+
+        mods = modifiers or []
+
+        # 1. Сначала спец-перехват (Ctrl+C/V при выделенном диапазоне)
+        if self.extra_key_callback is not None and key is not None:
             try:
-                # Совместимость с разными версиями Kivy:
-                # где-то приходит tuple (key, scancode), где-то только key.
-                if isinstance(keycode, (tuple, list)):
-                    key = keycode[0]
-                else:
-                    key = keycode
-                if cb(key, modifiers or []):
+                if self.extra_key_callback(key, mods):
                     return True
             except Exception:
                 pass
+
+        # 2. Затем обычная навигация
+        if self.nav_callback is not None and key is not None:
+            try:
+                if self.nav_callback(key, mods):
+                    return True
+            except Exception:
+                pass
+
         return super().keyboard_on_key_down(window, keycode, text, modifiers)
 
 
@@ -53,7 +105,7 @@ class NavTextInput(TextInput):
 class CenteredField(FloatLayout):
     def __init__(self, text='', font_size=dp(15),
                  pad_lr=dp(10), fg_color=LABEL_DARK, halign='center',
-                 on_key_callback=None,
+                 on_key_callback=None, extra_key_callback=None,
                  **ti_kwargs):
         super().__init__()
         ti_kwargs.pop('valign', None)
@@ -71,12 +123,13 @@ class CenteredField(FloatLayout):
             foreground_color=(0, 0, 0, 0),
             cursor_color=(0, 0, 0, 0), cursor_width=0,
             cursor_blink=False,
-            selection_color=(0, 0, 0, 0),
+            selection_color=(0.20, 0.45, 0.90, 0.40),
             padding=[0, 0, 0, 0],
-            use_bubble=False, use_handles=False,
+            halign='center',
             **ti_kwargs,
         )
         self.input.nav_callback = on_key_callback
+        self.input.extra_key_callback = extra_key_callback
         self.add_widget(self.input)
         self.input.bind(text=self._on_text)
         self.input.bind(focus=self._on_focus)
@@ -103,6 +156,10 @@ class CenteredField(FloatLayout):
 
     def _on_focus(self, inst, value):
         self._cursor_on = True
+        if value:
+            self.input._just_focused = True
+        else:
+            self.input._just_focused = False
         self._redraw()
 
     def on_parent(self, inst, parent):
@@ -299,8 +356,12 @@ class VerticalLabel(Widget):
 # ---------------------------------------------------------------------------
 class DayCell(BoxLayout):
     def __init__(self, text='', day_type='work', show_right=True,
-                 on_key_callback=None, **kwargs):
+                 on_key_callback=None, on_cell_touch_down=None,
+                 extra_key_callback=None, **kwargs):
         super().__init__(orientation='horizontal', **kwargs)
+        self._on_cell_touch_down = on_cell_touch_down
+        self._highlighted = False
+
         if day_type == 'holiday':
             bg, fg = HOLIDAY_BG, HOLIDAY_FG
         elif day_type == 'weekend':
@@ -310,6 +371,8 @@ class DayCell(BoxLayout):
         with self.canvas.before:
             Color(*bg)
             self._rect = Rectangle(pos=self.pos, size=self.size)
+            Color(0.20, 0.45, 0.90, 0.35)
+            self._hl_rect = Rectangle(pos=self.pos, size=(0, 0))
         self.bind(pos=self._update_rect, size=self._update_rect)
         if show_right:
             add_right_border(self, color=HEADER_DIVIDER, thickness=1)
@@ -319,35 +382,82 @@ class DayCell(BoxLayout):
             background_color=(0, 0, 0, 0),
             background_normal='', background_active='',
             on_key_callback=on_key_callback,
+            extra_key_callback=extra_key_callback,
         )
         self.input = _w.input
         self.add_widget(_w)
 
+    def set_highlight(self, on):
+        self._highlighted = bool(on)
+        self._update_rect()
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            if self._on_cell_touch_down is not None:
+                try:
+                    self._on_cell_touch_down(self, touch)
+                except Exception:
+                    pass
+        return super().on_touch_down(touch)
+
     def _update_rect(self, *a):
         self._rect.pos = self.pos
         self._rect.size = self.size
+        if self._highlighted:
+            self._hl_rect.pos = self.pos
+            self._hl_rect.size = self.size
+        else:
+            self._hl_rect.size = (0, 0)
 
 
 class ResultCell(BoxLayout):
     def __init__(self, text='0', fg_color=LABEL_LIGHT,
                  show_left=False, show_right=True,
                  border_color=(0, 0, 0, 1), border_th=1,
-                 on_key_callback=None, **kwargs):
+                 on_key_callback=None, on_cell_touch_down=None,
+                 extra_key_callback=None, **kwargs):
         super().__init__(orientation='horizontal', **kwargs)
+        self._on_cell_touch_down = on_cell_touch_down
+        self._highlighted = False
         if show_left:
             add_left_border(self, color=border_color, thickness=border_th)
         if show_right:
             add_right_border(self, color=border_color, thickness=border_th)
+        with self.canvas.before:
+            Color(0.20, 0.45, 0.90, 0.35)
+            self._hl_rect = Rectangle(pos=self.pos, size=(0, 0))
+        self.bind(pos=self._update_hl, size=self._update_hl)
         _w = CenteredField(
             text=text, font_size=dp(14), pad_lr=dp(2),
             halign='center', fg_color=fg_color,
             background_color=(0, 0, 0, 0),
             background_normal='', background_active='',
             on_key_callback=on_key_callback,
+            extra_key_callback=extra_key_callback,
         )
         self.input = _w.input
         self._field = _w
         self.add_widget(_w)
+
+    def set_highlight(self, on):
+        self._highlighted = bool(on)
+        self._update_hl()
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            if self._on_cell_touch_down is not None:
+                try:
+                    self._on_cell_touch_down(self, touch)
+                except Exception:
+                    pass
+        return super().on_touch_down(touch)
+
+    def _update_hl(self, *a):
+        if self._highlighted:
+            self._hl_rect.pos = self.pos
+            self._hl_rect.size = self.size
+        else:
+            self._hl_rect.size = (0, 0)
 
     @property
     def text(self):

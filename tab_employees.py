@@ -17,12 +17,16 @@ from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 
+from kivy.uix.textinput import TextInput
+
 from config import (FONT_NAME, LABEL_LIGHT, DEFAULT_POSITIONS,
                     DEFAULT_DEPARTMENTS, DEFAULT_ORG,
-                    DEPT_BAR_BG, DEPT_BAR_FG)
+                    DEPT_BAR_BG, DEPT_BAR_FG,
+                    DEFAULT_ENERGETIC, DELETE_PASSWORD)
 from data_utils import save_data
 from ui_helpers import (add_bottom_border, add_top_border,
-                        add_left_border, add_right_border, vsep)
+                        add_left_border, add_right_border, vsep,
+                        NoOverscrollEffect, ask_password_and_run)
 from ui_widgets import CenteredField, CenteredSpinner
 
 
@@ -75,9 +79,18 @@ class EmployeesTab(BoxLayout):
 
         self.add_widget(top)
 
-        scroll = ScrollView(scroll_type=['bars'], effect_cls='ScrollEffect')
+        # ---- Фиксированная шапка таблицы (НЕ прокручивается) ----
+        self.header_holder = GridLayout(cols=1, size_hint_y=None,
+                                         height=dp(37),
+                                         padding=(5, 0, 5, 0))
+        self.add_widget(self.header_holder)
+        self._build_header()
+
+        # ---- Прокручиваемое тело таблицы ----
+        scroll = ScrollView(scroll_type=['bars'],
+                            effect_cls=NoOverscrollEffect)
         self.list_layout = GridLayout(cols=1, size_hint_y=None,
-                                       spacing=0, padding=5)
+                                       spacing=0, padding=(5, 0, 5, 5))
         self.list_layout.bind(minimum_height=self.list_layout.setter('height'))
         scroll.add_widget(self.list_layout)
         self.add_widget(scroll)
@@ -179,9 +192,6 @@ class EmployeesTab(BoxLayout):
     def _add_dept_bar(self, name, bg=DEPT_BAR_BG):
         bar = BoxLayout(size_hint_y=None, height=dp(30),
                         padding=(0, 0, 0, 0))
-        with bar.canvas.before:
-            Color = None  # placeholder, see below
-        # на самом деле:
         from kivy.graphics import Color as _Color, Rectangle as _Rect
         with bar.canvas.before:
             _Color(*bg)
@@ -194,10 +204,10 @@ class EmployeesTab(BoxLayout):
         lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
         bar.add_widget(lbl)
         self.list_layout.add_widget(bar)
-
-    def refresh(self):
-        self.list_layout.clear_widgets()
-
+        
+    def _build_header(self):
+        """Строка-шапка таблицы — не прокручивается."""
+        self.header_holder.clear_widgets()
         header = BoxLayout(size_hint_y=None, height=dp(35), spacing=0)
         header.add_widget(Label(text="№", bold=True, size_hint_x=0.4,
                                  font_name=FONT_NAME, font_size=dp(15),
@@ -223,7 +233,10 @@ class EmployeesTab(BoxLayout):
         add_bottom_border(header, color=LABEL_LIGHT, thickness=2)
         add_left_border(header, color=LABEL_LIGHT, thickness=2)
         add_right_border(header, color=LABEL_LIGHT, thickness=2)
-        self.list_layout.add_widget(header)
+        self.header_holder.add_widget(header)
+
+    def refresh(self):
+        self.list_layout.clear_widgets()
 
         departments = self.app.data.get('departments', [])
         employees = self.app.data['employees']
@@ -252,34 +265,15 @@ class EmployeesTab(BoxLayout):
 
     def delete_employee(self, idx):
         emp = self.app.data['employees'][idx]
-        content = BoxLayout(orientation='vertical', spacing=10, padding=10)
-        content.add_widget(Label(
-            text=f"Удалить сотрудника:\n«{emp.get('name', '')}»?",
-            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(15),
-            outline_color=(0, 0, 0, 1), outline_width=1,
-            halign='center'))
-        btns = BoxLayout(size_hint_y=None, height=dp(40), spacing=10)
-        yes = Button(text="Да", background_color=(0.9, 0.35, 0.35, 1),
-                     color=(1, 1, 1, 1), font_name=FONT_NAME,
-                     font_size=dp(16), bold=True)
-        no = Button(text="Нет", color=(1, 1, 1, 1),
-                    font_name=FONT_NAME, font_size=dp(16), bold=True)
-        btns.add_widget(yes)
-        btns.add_widget(no)
-        content.add_widget(btns)
-        popup = Popup(title="Подтверждение", content=content,
-                      size_hint=(0.5, 0.35), title_color=LABEL_LIGHT,
-                      title_font=FONT_NAME)
 
-        def do_del(*a):
+        def _do():
             self.app.data['employees'].pop(idx)
             save_data(self.app.data)
-            popup.dismiss()
             self.refresh()
 
-        yes.bind(on_press=do_del)
-        no.bind(on_press=popup.dismiss)
-        popup.open()
+        ask_password_and_run(
+            DELETE_PASSWORD, _do,
+            description=f"Удалить сотрудника:\n«{emp.get('name', '')}»?")
 
     def show_edit_popup(self, idx):
         emp = (self.app.data['employees'][idx] if idx is not None
@@ -288,53 +282,61 @@ class EmployeesTab(BoxLayout):
         positions = self.app.data.get('positions', []) or list(DEFAULT_POSITIONS)
         departments = self.app.data.get('departments', [])
 
-        outer = BoxLayout(orientation='vertical', spacing=0,
-                          padding=(10, 10, 10, 10))
-        top_anchor = AnchorLayout(anchor_x='center', anchor_y='top')
+        outer = BoxLayout(orientation='vertical', spacing=10,
+                          padding=(20, 15, 20, 15))
 
         fields = BoxLayout(orientation='vertical', spacing=10,
-                           size_hint=(1, None), height=dp(160))
+                           size_hint=(1, None), height=dp(140))
 
-        row_name = BoxLayout(size_hint_y=None, height=dp(44), spacing=5)
-        row_name.add_widget(Label(text="Фамилия Имя Отчество",
-                                   size_hint_x=0.4, color=LABEL_LIGHT,
-                                   font_name=FONT_NAME, font_size=dp(15),
-                                   outline_color=(0, 0, 0, 1),
-                                   outline_width=1))
-        name_w = CenteredField(text=emp.get('name', ''), font_size=dp(16),
-                                pad_lr=dp(10), halign='left')
-        name_w.size_hint_x = 0.6
+        LBL_W = dp(180)
+
+        # --- ФИО ---
+        row_name = BoxLayout(size_hint_y=None, height=dp(38), spacing=8)
+        row_name.add_widget(Label(
+            text="Фамилия Имя Отчество", size_hint=(None, 1), width=LBL_W,
+            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(15),
+            halign='right', valign='middle',
+            text_size=(LBL_W, dp(38))))
+        name_w = CenteredField(text=emp.get('name', ''), font_size=dp(15),
+                               pad_lr=dp(10), halign='left')
+        name_w.size_hint = (1, None)
+        name_w.height = dp(32)
         row_name.add_widget(name_w)
         fields.add_widget(row_name)
 
-        row_dept = BoxLayout(size_hint_y=None, height=dp(44), spacing=5)
-        row_dept.add_widget(Label(text="Отдел", size_hint_x=0.4,
-                                   color=LABEL_LIGHT,
-                                   font_name=FONT_NAME, font_size=dp(15),
-                                   outline_color=(0, 0, 0, 1),
-                                   outline_width=1))
+        # --- Отдел ---
+        row_dept = BoxLayout(size_hint_y=None, height=dp(38), spacing=8)
+        row_dept.add_widget(Label(
+            text="Отдел", size_hint=(None, 1), width=LBL_W,
+            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(15),
+            halign='right', valign='middle',
+            text_size=(LBL_W, dp(38))))
         dept_w = CenteredSpinner(
             text=emp.get('department', '') or (departments[0] if departments else ''),
-            values=departments, spinner_height=dp(32), font_size=dp(15))
-        dept_w.size_hint_x = 0.6
+            values=departments, spinner_height=dp(30), font_size=dp(14))
+        dept_w.size_hint = (1, None)
+        dept_w.height = dp(32)
         row_dept.add_widget(dept_w)
         fields.add_widget(row_dept)
 
-        row_pos = BoxLayout(size_hint_y=None, height=dp(44), spacing=5)
-        row_pos.add_widget(Label(text="Должность (профессия)",
-                                  size_hint_x=0.4, color=LABEL_LIGHT,
-                                  font_name=FONT_NAME, font_size=dp(15),
-                                  outline_color=(0, 0, 0, 1),
-                                  outline_width=1))
+        # --- Должность ---
+        row_pos = BoxLayout(size_hint_y=None, height=dp(38), spacing=8)
+        row_pos.add_widget(Label(
+            text="Должность (профессия)",
+            size_hint=(None, 1), width=LBL_W,
+            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(15),
+            halign='right', valign='middle',
+            text_size=(LBL_W, dp(38))))
         pos_w = CenteredSpinner(
             text=emp.get('position', '') or (positions[0] if positions else ''),
-            values=positions, spinner_height=dp(32), font_size=dp(15))
-        pos_w.size_hint_x = 0.6
+            values=positions, spinner_height=dp(30), font_size=dp(14))
+        pos_w.size_hint = (1, None)
+        pos_w.height = dp(32)
         row_pos.add_widget(pos_w)
         fields.add_widget(row_pos)
 
-        top_anchor.add_widget(fields)
-        outer.add_widget(top_anchor)
+        outer.add_widget(fields)
+        outer.add_widget(Widget())     # распорка
 
         btns = BoxLayout(size_hint_y=None, height=dp(50), spacing=10)
         save_btn = Button(text="Сохранить",
@@ -348,7 +350,7 @@ class EmployeesTab(BoxLayout):
         outer.add_widget(btns)
 
         popup = Popup(title="Сотрудник" if idx is not None else "Новый сотрудник",
-                      content=outer, size_hint=(0.6, 0.55),
+                      content=outer, size_hint=(0.6, 0.42),
                       title_color=LABEL_LIGHT, title_font=FONT_NAME)
 
         def on_save(*a):
@@ -400,7 +402,8 @@ class EmployeesTab(BoxLayout):
         add_row.add_widget(add_btn)
         content.add_widget(add_row)
 
-        list_scroll = ScrollView()
+        list_scroll = ScrollView(scroll_type=['bars'], bar_width=dp(8),
+                                  effect_cls=NoOverscrollEffect)
         list_grid = GridLayout(cols=1, size_hint_y=None, spacing=2)
         list_grid.bind(minimum_height=list_grid.setter('height'))
 
@@ -423,16 +426,22 @@ class EmployeesTab(BoxLayout):
             rebuild_list()
 
         def delete_pos(ii):
-            try:
-                name = self.app.data['positions'][ii]
-                self.app.data['positions'].pop(ii)
-                self.app.data.get('night_flags', {}).pop(name, None)
-                self.app.data.get('overtime_flags', {}).pop(name, None)
-                self.app.data.get('holiday_flags', {}).pop(name, None)
-                save_data(self.app.data)
-                rebuild_list()
-            except Exception:
-                pass
+            name = self.app.data['positions'][ii]
+
+            def _do():
+                try:
+                    self.app.data['positions'].pop(ii)
+                    self.app.data.get('night_flags', {}).pop(name, None)
+                    self.app.data.get('overtime_flags', {}).pop(name, None)
+                    self.app.data.get('holiday_flags', {}).pop(name, None)
+                    save_data(self.app.data)
+                    rebuild_list()
+                except Exception:
+                    pass
+
+            ask_password_and_run(
+                DELETE_PASSWORD, _do,
+                description=f"Удалить должность:\n«{name}»?")
 
         def edit_pos(ii):
             old_name = self.app.data['positions'][ii]
@@ -600,75 +609,437 @@ class EmployeesTab(BoxLayout):
 
     def show_departments_popup(self):
         self.app.data.setdefault('departments', list(DEFAULT_DEPARTMENTS))
+        self.app.data.setdefault('department_signer', {})
+        self.app.data.setdefault('department_energetic', {})   # legacy
         if not self.app.data['departments']:
             self.app.data['departments'] = list(DEFAULT_DEPARTMENTS)
 
-        content = BoxLayout(orientation='vertical', spacing=8, padding=10)
-        add_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=5)
-        new_dept_wrap = CenteredField(text='', font_size=dp(15),
-                                       pad_lr=dp(10), halign='left')
-        new_dept_wrap.size_hint_x = 0.7
-        add_row.add_widget(new_dept_wrap)
-        add_btn = Button(text="Добавить", size_hint_x=0.3,
-                         background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1),
-                         font_name=FONT_NAME, font_size=dp(16), bold=True)
-        add_row.add_widget(add_btn)
-        content.add_widget(add_row)
+        # Должности подписантов отдела — отдельный список,
+        # НЕ связан с должностями сотрудников (positions).
+        signer_positions = self.app.data.setdefault('signer_positions',
+                                                     ['Энергетик'])
+        if not signer_positions:
+            signer_positions.append('Энергетик')
+            self.app.data['signer_positions'] = signer_positions
 
-        list_scroll = ScrollView()
+        content = BoxLayout(orientation='vertical', spacing=8, padding=10)
+
+        add_btn = Button(text="+ Добавить отдел",
+                         size_hint_y=None, height=dp(40),
+                         background_color=(0.3, 0.7, 0.3, 1),
+                         color=(1, 1, 1, 1),
+                         font_name=FONT_NAME, font_size=dp(16), bold=True)
+        content.add_widget(add_btn)
+
+        # --- строка заголовка ---
+        header = BoxLayout(size_hint_y=None, height=dp(34), spacing=6)
+        header.add_widget(vsep(color=LABEL_LIGHT))          # левый край
+        header.add_widget(Label(text="№", bold=True, size_hint_x=None,
+                                 width=dp(40), color=LABEL_LIGHT,
+                                 font_name=FONT_NAME, font_size=dp(14)))
+        header.add_widget(vsep(color=LABEL_LIGHT))
+        header.add_widget(Label(text="Название отдела", bold=True,
+                                 size_hint_x=2.2, color=LABEL_LIGHT,
+                                 font_name=FONT_NAME, font_size=dp(14),
+                                 halign='left', valign='middle',
+                                 text_size=(dp(220), dp(34))))
+        header.add_widget(vsep(color=LABEL_LIGHT))
+        header.add_widget(Label(text="Должность", bold=True,
+                                 size_hint_x=1.8, color=LABEL_LIGHT,
+                                 font_name=FONT_NAME, font_size=dp(14),
+                                 halign='left', valign='middle',
+                                 text_size=(dp(180), dp(34))))
+        header.add_widget(vsep(color=LABEL_LIGHT))
+        header.add_widget(Label(text="Фамилия Имя Отчество", bold=True,
+                                 size_hint_x=2.5, color=LABEL_LIGHT,
+                                 font_name=FONT_NAME, font_size=dp(14),
+                                 halign='left', valign='middle',
+                                 text_size=(dp(260), dp(34))))
+        header.add_widget(vsep(color=LABEL_LIGHT))
+        header.add_widget(Label(text="Действия", bold=True,
+                                 size_hint_x=None,
+                                 width=dp(230), color=LABEL_LIGHT,
+                                 font_name=FONT_NAME, font_size=dp(14),
+                                 halign='center', valign='middle',
+                                 text_size=(dp(230), dp(34))))
+        header.add_widget(vsep(color=LABEL_LIGHT))          # правый край
+        add_top_border(header, color=LABEL_LIGHT, thickness=1)
+        add_bottom_border(header, color=LABEL_LIGHT, thickness=1)
+        content.add_widget(header)
+
+        list_scroll = ScrollView(scroll_type=['bars'], bar_width=dp(8),
+                                  effect_cls=NoOverscrollEffect)
         list_grid = GridLayout(cols=1, size_hint_y=None, spacing=2)
         list_grid.bind(minimum_height=list_grid.setter('height'))
 
-        def delete_dept(ii):
-            try:
-                name = self.app.data['departments'][ii]
-                self.app.data['departments'].pop(ii)
-                for emp in self.app.data['employees']:
-                    if emp.get('department', '') == name:
-                        emp['department'] = ''
-                save_data(self.app.data)
-                rebuild_list()
-                self.refresh()
-            except Exception:
-                pass
+        def get_signer(dept):
+            signers = self.app.data.get('department_signer', {})
+            entry = signers.get(dept)
+            if entry and entry.get('name'):
+                return (entry.get('position') or 'Энергетик',
+                        entry.get('name'))
+            em = self.app.data.get('department_energetic', {})
+            return ('Энергетик', em.get(dept) or DEFAULT_ENERGETIC)
 
-        def edit_dept(ii):
-            old_name = self.app.data['departments'][ii]
-            c = BoxLayout(orientation='vertical', spacing=10, padding=10)
-            c.add_widget(Label(text=f"Новое название для «{old_name}»:",
-                                color=LABEL_LIGHT, halign='center',
+        def delete_dept(ii):
+            name = self.app.data['departments'][ii]
+
+            def _do():
+                try:
+                    self.app.data['departments'].pop(ii)
+                    self.app.data.get('department_signer', {}).pop(name, None)
+                    self.app.data.get('department_energetic', {}).pop(name, None)
+                    for emp in self.app.data['employees']:
+                        if emp.get('department', '') == name:
+                            emp['department'] = ''
+                    save_data(self.app.data)
+                    rebuild_list()
+                    self.refresh()
+                except Exception:
+                    pass
+
+            ask_password_and_run(
+                DELETE_PASSWORD, _do,
+                description=f"Удалить отдел:\n«{name}»?")
+
+        def open_dept_editor(idx):
+            """idx=None — создание, иначе — редактирование."""
+            is_new = (idx is None)
+            old_name = '' if is_new else self.app.data['departments'][idx]
+            signers = self.app.data.setdefault('department_signer', {})
+            entry = signers.get(old_name, {})
+            # Для нового отдела — поля пустые, для существующего —
+            # подставляем сохранённые значения.
+            old_pos = '' if is_new else entry.get('position', 'Энергетик')
+            old_fio = '' if is_new else entry.get('name', DEFAULT_ENERGETIC)
+
+            positions_now = list(self.app.data.get('signer_positions',
+                                                    ['Энергетик']))
+            if old_pos and old_pos not in positions_now:
+                positions_now.append(old_pos)
+
+            outer = BoxLayout(orientation='vertical', spacing=10,
+                              padding=(20, 15, 20, 15))
+
+            fields = BoxLayout(orientation='vertical', spacing=10,
+                               size_hint=(1, None), height=dp(140))
+
+            LBL_W = dp(150)
+            BTN_W = dp(130)
+
+            def _make_input(text_value):
+                return TextInput(
+                    text=text_value, multiline=False,
+                    font_size=dp(14), font_name=FONT_NAME,
+                    foreground_color=(0.05, 0.05, 0.05, 1),
+                    background_color=(1, 1, 1, 1),
+                    cursor_color=(0.10, 0.30, 0.70, 1),
+                    cursor_width=dp(2),
+                    selection_color=(0.20, 0.45, 0.90, 0.40),
+                    padding=[dp(8), dp(6), dp(8), dp(6)],
+                    size_hint=(1, None), height=dp(32),
+                )
+
+            # --- Название отдела ---
+            row_name = BoxLayout(size_hint_y=None, height=dp(38), spacing=8)
+            row_name.add_widget(Label(
+                text="Название:", size_hint=(None, 1), width=LBL_W,
+                color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(15),
+                halign='right', valign='middle',
+                text_size=(LBL_W, dp(38))))
+            edit_wrap = _make_input(old_name)
+            row_name.add_widget(edit_wrap)
+            fields.add_widget(row_name)
+
+            # --- Должность (поле + кнопка «Выбрать») ---
+            row_pos = BoxLayout(size_hint_y=None, height=dp(38), spacing=8)
+            row_pos.add_widget(Label(
+                text="Должность:", size_hint=(None, 1), width=LBL_W,
+                color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(15),
+                halign='right', valign='middle',
+                text_size=(LBL_W, dp(38))))
+
+            pos_row = BoxLayout(orientation='horizontal', spacing=6,
+                                 size_hint=(1, None), height=dp(32))
+            pos_w = _make_input(old_pos)
+            pos_row.add_widget(pos_w)
+
+            pos_btn = Button(
+                text="Выбрать",
+                size_hint=(None, 1), width=BTN_W,
+                font_name=FONT_NAME, font_size=dp(14), bold=True,
+                background_normal='', background_down='',
+                background_color=(0.25, 0.55, 0.85, 1),
+                color=(1, 1, 1, 1),
+            )
+            pos_row.add_widget(pos_btn)
+
+            row_pos.add_widget(pos_row)
+            fields.add_widget(row_pos)
+
+            # --- ФИО руководителя ---
+            row_fio = BoxLayout(size_hint_y=None, height=dp(38), spacing=8)
+            row_fio.add_widget(Label(
+                text="ФИО руководителя:", size_hint=(None, 1), width=LBL_W,
+                color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(15),
+                halign='right', valign='middle',
+                text_size=(LBL_W, dp(38))))
+            fio_w = _make_input(old_fio)
+            row_fio.add_widget(fio_w)
+            fields.add_widget(row_fio)
+
+            outer.add_widget(fields)
+            outer.add_widget(Widget())     # распорка — «съедает» лишнюю высоту
+
+            # --- попап со списком существующих должностей подписантов ---
+            def _open_positions_picker(*a):
+                picker = Popup(title="Существующие должности",
+                               size_hint=(0.65, 0.65),
+                               title_color=LABEL_LIGHT,
+                               title_font=FONT_NAME)
+
+                inner = BoxLayout(orientation='vertical', spacing=6,
+                                  padding=8)
+                sv = ScrollView(scroll_type=['bars'], bar_width=dp(8),
+                                effect_cls=NoOverscrollEffect)
+                grid = GridLayout(cols=1, size_hint_y=None, spacing=4)
+                grid.bind(minimum_height=grid.setter('height'))
+
+                def _pick(name):
+                    pos_w.text = name
+                    picker.dismiss()
+
+                def _rename(rename_old):
+                    c = BoxLayout(orientation='vertical',
+                                  spacing=10, padding=10)
+                    c.add_widget(Label(
+                        text=f"Новое название для «{rename_old}»:",
+                        color=LABEL_LIGHT, halign='center',
+                        font_name=FONT_NAME, font_size=dp(15),
+                        outline_color=(0, 0, 0, 1), outline_width=1))
+                    new_wrap = _make_input(rename_old)
+                    c.add_widget(new_wrap)
+                    btns2 = BoxLayout(size_hint_y=None,
+                                      height=dp(40), spacing=10)
+                    ok = Button(text="Сохранить",
+                                background_color=(0.3, 0.7, 0.3, 1),
+                                color=(1, 1, 1, 1),
                                 font_name=FONT_NAME, font_size=dp(15),
-                                outline_color=(0, 0, 0, 1), outline_width=1))
-            edit_wrap = CenteredField(text=old_name, font_size=dp(15),
-                                       pad_lr=dp(10), halign='left')
-            edit_wrap.size_hint_y = None
-            edit_wrap.height = dp(40)
-            c.add_widget(edit_wrap)
-            btns = BoxLayout(size_hint_y=None, height=dp(40), spacing=10)
+                                bold=True)
+                    cancel = Button(text="Отмена", color=(1, 1, 1, 1),
+                                    font_name=FONT_NAME, font_size=dp(15),
+                                    bold=True)
+                    btns2.add_widget(ok)
+                    btns2.add_widget(cancel)
+                    c.add_widget(btns2)
+                    rp = Popup(title="Переименовать должность",
+                               content=c, size_hint=(0.5, 0.35),
+                               title_color=LABEL_LIGHT,
+                               title_font=FONT_NAME)
+
+                    def do_rename(*a):
+                        new_name = new_wrap.text.strip()
+                        if not new_name or new_name == rename_old:
+                            rp.dismiss()
+                            return
+                        sp_list = self.app.data.setdefault(
+                            'signer_positions', ['Энергетик'])
+                        if new_name in sp_list:
+                            rp.dismiss()
+                            return
+                        sp_list[sp_list.index(rename_old)] = new_name
+
+                        # Обновляем ссылки в department_signer
+                        signers_map = self.app.data.get(
+                            'department_signer', {})
+                        for _d, ent in signers_map.items():
+                            if ent.get('position') == rename_old:
+                                ent['position'] = new_name
+
+                        if pos_w.text.strip() == rename_old:
+                            pos_w.text = new_name
+
+                        save_data(self.app.data)
+                        rp.dismiss()
+                        rebuild_rows()
+                        rebuild_list()
+
+                    ok.bind(on_press=do_rename)
+                    cancel.bind(on_press=rp.dismiss)
+                    rp.open()
+
+                def _delete(name):
+                    signers_map = self.app.data.get('department_signer', {})
+                    used_by = [d for d, ent in signers_map.items()
+                               if ent.get('position') == name]
+                    if used_by:
+                        c = BoxLayout(orientation='vertical',
+                                      spacing=10, padding=10)
+                        c.add_widget(Label(
+                            text=(f"Должность «{name}» используется "
+                                  f"отделами:\n" + ", ".join(used_by) +
+                                  "\n\nСначала измените её у этих отделов."),
+                            color=LABEL_LIGHT, halign='center',
+                            valign='middle',
+                            font_name=FONT_NAME, font_size=dp(15),
+                            outline_color=(0, 0, 0, 1), outline_width=1))
+                        ok = Button(text="OK", size_hint_y=None,
+                                    height=dp(40),
+                                    font_name=FONT_NAME, font_size=dp(15),
+                                    bold=True,
+                                    background_color=(0.3, 0.7, 0.3, 1),
+                                    color=(1, 1, 1, 1))
+                        c.add_widget(ok)
+                        p2 = Popup(title="Нельзя удалить", content=c,
+                                   size_hint=(0.55, 0.4),
+                                   title_color=LABEL_LIGHT,
+                                   title_font=FONT_NAME)
+                        ok.bind(on_press=p2.dismiss)
+                        p2.open()
+                        return
+
+                    def _do():
+                        sp_list = self.app.data.get('signer_positions', [])
+                        if name in sp_list:
+                            sp_list.remove(name)
+                            save_data(self.app.data)
+                            rebuild_rows()
+                            rebuild_list()
+
+                    ask_password_and_run(
+                        DELETE_PASSWORD, _do,
+                        description=(f"Удалить должность подписанта:\n"
+                                     f"«{name}»?"))
+
+                def rebuild_rows():
+                    grid.clear_widgets()
+                    sp_list = list(self.app.data.get(
+                        'signer_positions', ['Энергетик']))
+                    if not sp_list:
+                        grid.add_widget(Label(
+                            text="(список пуст)", color=LABEL_LIGHT,
+                            font_name=FONT_NAME, font_size=dp(14),
+                            size_hint_y=None, height=dp(40)))
+                        return
+                    for nm in sp_list:
+                        row = BoxLayout(size_hint_y=None,
+                                        height=dp(40), spacing=4)
+                        b = Button(text=nm, size_hint_x=1,
+                                   font_name=FONT_NAME, font_size=dp(14),
+                                   color=(1, 1, 1, 1))
+                        b.bind(on_press=lambda *a, x=nm: _pick(x))
+                        row.add_widget(b)
+
+                        ren_btn = Button(
+                            text="Изменить",
+                            size_hint_x=None, width=dp(130),
+                            font_name=FONT_NAME, font_size=dp(15),
+                            bold=True,
+                            background_color=(0.35, 0.55, 0.85, 1),
+                            color=(1, 1, 1, 1))
+                        ren_btn.bind(on_press=lambda *a, x=nm: _rename(x))
+                        row.add_widget(ren_btn)
+
+                        del_btn = Button(
+                            text="Удалить",
+                            size_hint_x=None, width=dp(130),
+                            font_name=FONT_NAME, font_size=dp(15),
+                            bold=True,
+                            background_color=(0.9, 0.35, 0.35, 1),
+                            color=(1, 1, 1, 1))
+                        del_btn.bind(on_press=lambda *a, x=nm: _delete(x))
+                        row.add_widget(del_btn)
+
+                        grid.add_widget(row)
+
+                rebuild_rows()
+                sv.add_widget(grid)
+                inner.add_widget(sv)
+
+                close_b = Button(text="Закрыть", size_hint_y=None,
+                                 height=dp(40), color=(1, 1, 1, 1),
+                                 font_name=FONT_NAME, font_size=dp(15),
+                                 bold=True)
+                close_b.bind(on_press=picker.dismiss)
+                inner.add_widget(close_b)
+                picker.content = inner
+                picker.open()
+
+            pos_btn.bind(on_press=_open_positions_picker)
+
+            # --- кнопки Сохранить / Отмена ---
+            btns = BoxLayout(size_hint_y=None, height=dp(50), spacing=10)
             ok = Button(text="Сохранить",
-                        background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1),
+                        background_color=(0.3, 0.7, 0.3, 1),
+                        color=(1, 1, 1, 1),
                         font_name=FONT_NAME, font_size=dp(16), bold=True)
             cancel = Button(text="Отмена", color=(1, 1, 1, 1),
                             font_name=FONT_NAME, font_size=dp(16), bold=True)
             btns.add_widget(ok)
             btns.add_widget(cancel)
-            c.add_widget(btns)
-            p = Popup(title="Изменить отдел", content=c,
-                      size_hint=(0.5, 0.35), title_color=LABEL_LIGHT,
-                      title_font=FONT_NAME)
+            outer.add_widget(btns)
+
+            p = Popup(title=("Новый отдел" if is_new
+                             else "Изменить отдел"),
+                      content=outer, size_hint=(0.6, 0.42),
+                      title_color=LABEL_LIGHT, title_font=FONT_NAME)
 
             def on_ok(*a):
                 new_name = edit_wrap.text.strip()
-                if not new_name or new_name == old_name:
-                    p.dismiss()
+                new_pos = pos_w.text.strip()
+                new_fio = fio_w.text.strip()
+
+                missing = []
+                if not new_name:
+                    missing.append("Название отдела")
+                if not new_pos:
+                    missing.append("Должность")
+                if not new_fio:
+                    missing.append("ФИО руководителя")
+                if missing:
+                    err = BoxLayout(orientation='vertical',
+                                    spacing=10, padding=10)
+                    err.add_widget(Label(
+                        text=("Заполните обязательные поля:\n• "
+                              + "\n• ".join(missing)),
+                        color=LABEL_LIGHT, halign='center', valign='middle',
+                        font_name=FONT_NAME, font_size=dp(15),
+                        outline_color=(0, 0, 0, 1), outline_width=1))
+                    err_btn = Button(
+                        text="OK", size_hint_y=None, height=dp(40),
+                        font_name=FONT_NAME, font_size=dp(16), bold=True,
+                        background_color=(0.3, 0.7, 0.3, 1),
+                        color=(1, 1, 1, 1))
+                    err.add_widget(err_btn)
+                    err_popup = Popup(title="Не все поля заполнены",
+                                      content=err, size_hint=(0.45, 0.35),
+                                      title_color=LABEL_LIGHT,
+                                      title_font=FONT_NAME)
+                    err_btn.bind(on_press=err_popup.dismiss)
+                    err_popup.open()
                     return
-                if new_name in self.app.data['departments']:
-                    p.dismiss()
+
+                if (new_name != old_name
+                        and new_name in self.app.data['departments']):
                     return
-                self.app.data['departments'][ii] = new_name
-                for emp in self.app.data['employees']:
-                    if emp.get('department', '') == old_name:
-                        emp['department'] = new_name
+
+                sp = self.app.data.setdefault('signer_positions',
+                                              ['Энергетик'])
+                if new_pos not in sp:
+                    sp.append(new_pos)
+
+                if is_new:
+                    self.app.data['departments'].append(new_name)
+                else:
+                    if new_name != old_name:
+                        self.app.data['departments'][idx] = new_name
+                        for emp in self.app.data['employees']:
+                            if emp.get('department', '') == old_name:
+                                emp['department'] = new_name
+                        signers.pop(old_name, None)
+                        self.app.data.get('department_energetic', {}).pop(
+                            old_name, None)
+                signers[new_name] = {'position': new_pos, 'name': new_fio}
                 save_data(self.app.data)
                 p.dismiss()
                 rebuild_list()
@@ -681,42 +1052,76 @@ class EmployeesTab(BoxLayout):
         def rebuild_list():
             list_grid.clear_widgets()
             for i, d in enumerate(self.app.data['departments']):
-                row = BoxLayout(size_hint_y=None, height=dp(44), spacing=6)
+                row = BoxLayout(size_hint_y=None, height=dp(42), spacing=6)
+
+                row.add_widget(vsep(color=LABEL_LIGHT))     # левый край
+
+                # №
+                row.add_widget(Label(text=str(i + 1),
+                                      size_hint_x=None, width=dp(40),
+                                      color=LABEL_LIGHT,
+                                      font_name=FONT_NAME, font_size=dp(14),
+                                      halign='center', valign='middle',
+                                      text_size=(dp(40), dp(42))))
+                row.add_widget(vsep(color=LABEL_LIGHT))
+
+                # Название отдела
                 row.add_widget(Label(text=d, color=(1, 1, 1, 1),
+                                      size_hint_x=2.2,
                                       font_name=FONT_NAME,
-                                      font_size=dp(16), bold=True,
-                                      outline_color=(0, 0, 0, 1),
-                                      outline_width=1,
+                                      font_size=dp(15), bold=True,
                                       halign='left', valign='middle',
-                                      text_size=(dp(300), dp(44))))
-                edit_btn = Button(text="Изменить", size_hint_x=None, width=dp(130),
-                                  font_name=FONT_NAME, font_size=dp(16), bold=True,
+                                      text_size=(dp(220), dp(42))))
+                row.add_widget(vsep(color=LABEL_LIGHT))
+
+                # Должность / ФИО
+                sign_pos, sign_fio = get_signer(d)
+                row.add_widget(Label(text=sign_pos,
+                                      size_hint_x=1.8,
+                                      color=(0.85, 0.90, 1.0, 1),
+                                      font_name=FONT_NAME,
+                                      font_size=dp(13),
+                                      halign='left', valign='middle',
+                                      text_size=(dp(180), dp(42))))
+                row.add_widget(vsep(color=LABEL_LIGHT))
+
+                row.add_widget(Label(text=sign_fio,
+                                      size_hint_x=2.5,
+                                      color=(0.85, 0.90, 1.0, 1),
+                                      font_name=FONT_NAME,
+                                      font_size=dp(13),
+                                      halign='left', valign='middle',
+                                      text_size=(dp(260), dp(42))))
+                row.add_widget(vsep(color=LABEL_LIGHT))
+
+                # Кнопки
+                btns_box = BoxLayout(size_hint_x=None, width=dp(230),
+                                     spacing=4)
+                edit_btn = Button(text="Изменить",
+                                  font_name=FONT_NAME, font_size=dp(15),
+                                  bold=True,
                                   background_color=(0.35, 0.55, 0.85, 1),
                                   color=(1, 1, 1, 1))
-                edit_btn.bind(on_press=lambda *a, ii=i: edit_dept(ii))
-                row.add_widget(edit_btn)
-                del_btn = Button(text="Удалить", size_hint_x=None, width=dp(130),
-                                 font_name=FONT_NAME, font_size=dp(16), bold=True,
+                edit_btn.bind(on_press=lambda *a, ii=i:
+                              open_dept_editor(ii))
+                btns_box.add_widget(edit_btn)
+
+                del_btn = Button(text="Удалить",
+                                 font_name=FONT_NAME, font_size=dp(15),
+                                 bold=True,
                                  background_color=(0.9, 0.35, 0.35, 1),
                                  color=(1, 1, 1, 1))
                 del_btn.bind(on_press=lambda *a, ii=i: delete_dept(ii))
-                row.add_widget(del_btn)
+                btns_box.add_widget(del_btn)
+
+                row.add_widget(btns_box)
+
+                row.add_widget(vsep(color=LABEL_LIGHT))     # правый край
+
+                add_bottom_border(row)
                 list_grid.add_widget(row)
 
-        def add_dept(*a):
-            txt = new_dept_wrap.text.strip()
-            if not txt:
-                return
-            if txt in self.app.data['departments']:
-                new_dept_wrap.text = ''
-                return
-            self.app.data['departments'].append(txt)
-            save_data(self.app.data)
-            new_dept_wrap.text = ''
-            rebuild_list()
-
-        add_btn.bind(on_press=add_dept)
-        new_dept_wrap.input.bind(on_text_validate=add_dept)
+        add_btn.bind(on_press=lambda *a: open_dept_editor(None))
         rebuild_list()
         list_scroll.add_widget(list_grid)
         content.add_widget(list_scroll)
@@ -726,7 +1131,7 @@ class EmployeesTab(BoxLayout):
                            font_name=FONT_NAME, font_size=dp(16), bold=True)
         content.add_widget(close_btn)
         popup = Popup(title="Отделы", content=content,
-                      size_hint=(0.55, 0.55), title_color=LABEL_LIGHT,
+                      size_hint=(0.80, 0.65), title_color=LABEL_LIGHT,
                       title_font=FONT_NAME)
         close_btn.bind(on_press=popup.dismiss)
         popup.open()

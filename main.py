@@ -47,6 +47,7 @@ from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.metrics import dp
 from kivy.graphics import Color, Rectangle
+from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
@@ -63,7 +64,11 @@ from tab_employees import EmployeesTab
 from tab_timesheet import TimesheetTab
 from tab_report import ReportTab
 from tab_about import AboutTab
+from kivy.uix.floatlayout import FloatLayout
 
+from config import (DATA_FILE, decorate_title, apply_app_icon,
+                    FONT_NAME, LABEL_LIGHT, DEFAULT_DIRECTOR)
+from ui_widgets import CenteredField
 
 # Цвета верхней панели
 TOPBAR_BG = (0.11, 0.12, 0.15, 1)
@@ -76,6 +81,7 @@ EXIT_BTN_H  = dp(40)     # высота кнопки «Выход»
 
 class TabelApp(App):
     title = "Табель учёта рабочего времени"
+    _dir_save_ev = None      # <— таймер автосохранения ФИО директора
 
     def on_start(self):
         """Форсируем фокус окна — иначе в .exe клавиатура
@@ -86,6 +92,17 @@ class TabelApp(App):
         except Exception:
             pass
 
+    def _on_director_change(self, inst, value):
+        self.data['director_name'] = value
+        if self._dir_save_ev:
+            self._dir_save_ev.cancel()
+        self._dir_save_ev = Clock.schedule_once(
+            lambda *a: save_data(self.data), 0.5)
+        try:
+            self.rep_tab.update_preview()
+        except Exception:
+            pass
+        
     def build(self):
         # ---- Заголовок: если иконки нет — добавим эмодзи ----
         self.title = decorate_title(self.title)
@@ -94,50 +111,40 @@ class TabelApp(App):
         except Exception:
             pass
 
-        # ---------------- Центрирование окна ----------------
-        def _center_window_kivy(dt=0):
+        # ---- Иконка окна и панели задач ----
+        # Вызываем несколько раз с задержкой: Kivy создаёт окно
+        # асинхронно, к моменту build() его HWND может ещё не
+        # существовать, а WinAPI не найдёт окно по заголовку.
+        for delay in (0.3, 0.8, 1.5):
+            Clock.schedule_once(
+                lambda dt: apply_app_icon(self.title), delay)
+
+        # ---------------- Разворот окна на весь экран ----------------
+        def _maximize_window_kivy(dt=0):
             try:
-                sys_w, sys_h = Window.get_system_size()
-                w, h = Window.size
-                avail_h = max(0, sys_h - 40)
-                Window.left = max(0, (sys_w - w) // 2)
-                Window.top  = max(0, (avail_h - h) // 2)
+                Window.maximize()
             except Exception:
                 pass
 
-        def _center_window_win32(dt=0):
+        def _maximize_window_win32(dt=0):
             if platform.system() != 'Windows':
                 return
             try:
                 import ctypes
-                from ctypes import wintypes
                 user32 = ctypes.windll.user32
                 hwnd = user32.FindWindowW(None, self.title)
-                if not hwnd:
-                    return
-                sw = user32.GetSystemMetrics(0)
-                sh = user32.GetSystemMetrics(1)
-                rect = wintypes.RECT()
-                user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                w = rect.right - rect.left
-                h = rect.bottom - rect.top
-                x = max(0, (sw - w) // 2)
-                y = max(0, (sh - h) // 2 - 20)
-                user32.SetWindowPos(hwnd, 0, x, y, 0, 0, 0x0001 | 0x0004)
+                if hwnd:
+                    SW_MAXIMIZE = 3
+                    user32.ShowWindow(hwnd, SW_MAXIMIZE)
             except Exception:
                 pass
 
-        def _center_window(dt=0):
-            _center_window_kivy(dt)
-            _center_window_win32(dt)
+        def _maximize_window(dt=0):
+            _maximize_window_kivy(dt)
+            _maximize_window_win32(dt)
 
-        def _apply_icon(dt=0):
-            apply_app_icon(self.title)
-
-        for t in (0, 0.15, 0.4, 1.0, 2.0):
-            Clock.schedule_once(_center_window, t)
-        for t in (0.1, 0.5, 1.5, 3.0):
-            Clock.schedule_once(_apply_icon, t)
+        for t in (0, 0.15, 0.4, 1.0):
+            Clock.schedule_once(_maximize_window, t)
 
         # ---------------- Данные ----------------
         self.data = load_data()
@@ -221,10 +228,79 @@ class TabelApp(App):
         Clock.schedule_once(lambda *a: root_tabs.switch_to(emp_tab), 0.2)
         Clock.schedule_interval(self._check_external_updates, 3.0)
 
+        # -------- Поле «Директор» — поверх строки вкладок справа --------
+        director_box = BoxLayout(orientation='horizontal',
+                                  size_hint=(None, None),
+                                  size=(dp(360), dp(38)),
+                                  spacing=8)
+
+        # Метку «Директор:» оборачиваем в AnchorLayout —
+        # тогда её текст всегда стоит ровно по центру высоты бокса,
+        # независимо от размера поля справа.
+        dir_lbl_holder = AnchorLayout(anchor_x='right', anchor_y='center',
+                                       size_hint_x=None, width=dp(80))
+        dir_lbl_holder.add_widget(Label(
+            text="Директор:", color=LABEL_LIGHT,
+            font_name=FONT_NAME, font_size=dp(14),
+            size_hint=(None, None), size=(dp(80), dp(20)),
+            halign='right', valign='middle',
+            text_size=(dp(80), dp(20))))
+        director_box.add_widget(dir_lbl_holder)
+
+        # Поле тоже оборачиваем в AnchorLayout(center) —
+        # чтобы его 30-пиксельная высота вставала по центру строки 38 px.
+        dir_field_holder = AnchorLayout(anchor_x='left', anchor_y='center',
+                                         size_hint=(None, 1),
+                                         width=dp(270))
+        director_wrap = CenteredField(
+            text=self.data.get('director_name', DEFAULT_DIRECTOR),
+            font_size=dp(14), pad_lr=dp(8), halign='left',
+        )
+        director_wrap.size_hint = (None, None)
+        director_wrap.size = (dp(270), dp(30))
+        director_wrap.input.bind(text=self._on_director_change)
+        dir_field_holder.add_widget(director_wrap)
+        director_box.add_widget(dir_field_holder)
+
+        self.director_wrap = director_wrap
+
+        tabs_wrapper = FloatLayout()
+        tabs_wrapper.add_widget(root_tabs)
+        tabs_wrapper.add_widget(director_box)
+
+        def _place_director(*_):
+            try:
+                strip_h = root_tabs._tab_strip.height
+            except Exception:
+                strip_h = dp(40)
+            director_box.right = tabs_wrapper.right - dp(8)
+            director_box.center_y = tabs_wrapper.top - strip_h / 2.0
+
+        tabs_wrapper.bind(pos=_place_director, size=_place_director)
+        Clock.schedule_once(_place_director, 0)
+        Clock.schedule_once(_place_director, 0.2)
+        Clock.schedule_once(_place_director, 0.6)
+    
+        # -------- Показываем поле «Директор» только на вкладке
+        #          «Рабочий персонал», на остальных — прячем --------
+        def _update_director_visibility(*_):
+            try:
+                cur = root_tabs.current_tab
+                show = cur is not None and cur.text == "Рабочий персонал"
+            except Exception:
+                show = False
+            director_box.opacity = 1 if show else 0
+            director_box.disabled = not show
+
+        root_tabs.bind(current_tab=_update_director_visibility)
+        Clock.schedule_once(_update_director_visibility, 0.05)
+        Clock.schedule_once(_update_director_visibility, 0.3)
+        Clock.schedule_once(_update_director_visibility, 0.6)
+
         # ---------------- Итоговая сборка ----------------
         root = BoxLayout(orientation='vertical')
         root.add_widget(top_bar)
-        root.add_widget(root_tabs)
+        root.add_widget(tabs_wrapper)
         return root
 
     # ------------------------------------------------------------------

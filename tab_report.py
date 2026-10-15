@@ -7,6 +7,7 @@ import os
 import webbrowser
 from calendar import monthrange
 from datetime import datetime, date
+from ui_helpers import NoOverscrollEffect   # <— новое
 
 from kivy.metrics import dp
 from kivy.uix.anchorlayout import AnchorLayout
@@ -18,6 +19,7 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
 from kivy.uix.widget import Widget
 from kivy.graphics import Color, Rectangle
+from kivy.clock import Clock
 
 try:
     import openpyxl
@@ -45,11 +47,11 @@ class ReportTab(BoxLayout):
         super().__init__(orientation='vertical', **kwargs)
         self.app = app
         self._build()
-        from kivy.clock import Clock
         Clock.schedule_once(lambda *a: self.update_preview(), 0.3)
 
     def _build(self):
         top = BoxLayout(size_hint_y=None, height=dp(52), spacing=5, padding=5)
+
         top.add_widget(Label(text="Месяц:", size_hint_x=None, width=dp(70),
                              color=LABEL_LIGHT, font_name=FONT_NAME,
                              font_size=dp(15)))
@@ -58,6 +60,7 @@ class ReportTab(BoxLayout):
                                      font_name=FONT_NAME,
                                      background_color=SPINNER_BG, color=SPINNER_FG)
         top.add_widget(self.month_spinner)
+
         top.add_widget(Label(text="Год:", size_hint_x=None, width=dp(50),
                              color=LABEL_LIGHT, font_name=FONT_NAME,
                              font_size=dp(15)))
@@ -66,16 +69,8 @@ class ReportTab(BoxLayout):
                                     font_name=FONT_NAME,
                                     background_color=SPINNER_BG, color=SPINNER_FG)
         top.add_widget(self.year_spinner)
-        top.add_widget(Widget())
 
-        # Кнопка «Подписи» — открывает редактор ФИО Энергетика и Директора
-        sign_btn = Button(text="Подписи",
-                          size_hint_x=None, width=dp(140),
-                          font_name=FONT_NAME, font_size=dp(15), bold=True,
-                          background_color=(0.45, 0.40, 0.65, 1),
-                          color=(1, 1, 1, 1))
-        sign_btn.bind(on_press=lambda *a: self.show_signatures_popup())
-        top.add_widget(sign_btn)
+        top.add_widget(Widget())  # распорка
 
         excel_btn = Button(text="Сохранить в Excel",
                            size_hint_x=None, width=dp(200),
@@ -97,7 +92,8 @@ class ReportTab(BoxLayout):
                   size=lambda i, v: setattr(i._rect, 'size', v))
         self.add_widget(line)
 
-        scroll = ScrollView(scroll_type=['bars'], effect_cls='ScrollEffect')
+        scroll = ScrollView(scroll_type=['bars'],
+                            effect_cls=NoOverscrollEffect)
         self.preview = Label(text="", size_hint_y=None, halign='left',
                               valign='top', padding=(20, 20),
                               font_name=FONT_NAME,
@@ -108,82 +104,19 @@ class ReportTab(BoxLayout):
         scroll.add_widget(self.preview)
         self.add_widget(scroll)
 
-    # ---------------- редактор подписей ----------------------------------
-    def show_signatures_popup(self):
-        energetic = self.app.data.get('energetic_name', DEFAULT_ENERGETIC)
-        director = self.app.data.get('director_name', DEFAULT_DIRECTOR)
-
-        content = BoxLayout(orientation='vertical', spacing=10, padding=12)
-
-        # ---------------- растяжка сверху ----------------
-        content.add_widget(Widget(size_hint_y=1))
-
-        # ---------------- поля (по центру) ----------------
-        # Ограничиваем общую ширину блока полей
-        center_holder = AnchorLayout(anchor_x='center', anchor_y='center')
-        fields = BoxLayout(orientation='vertical', spacing=10,
-                           size_hint=(None, None),
-                           width=dp(560),
-                           height=dp(100))
-
-        row_en = BoxLayout(size_hint_y=None, height=dp(44), spacing=8)
-        row_en.add_widget(Label(text="Энергетик:", size_hint_x=0.42,
-                                color=LABEL_LIGHT, font_name=FONT_NAME,
-                                font_size=dp(15), halign='right',
-                                valign='middle',
-                                text_size=(dp(150), dp(44))))
-        en_wrap = CenteredField(text=energetic, font_size=dp(15),
-                                pad_lr=dp(10), halign='left')
-        en_wrap.size_hint_x = 0.58
-        row_en.add_widget(en_wrap)
-        fields.add_widget(row_en)
-
-        row_dir = BoxLayout(size_hint_y=None, height=dp(44), spacing=8)
-        row_dir.add_widget(Label(text="Директор:", size_hint_x=0.42,
-                                 color=LABEL_LIGHT, font_name=FONT_NAME,
-                                 font_size=dp(15), halign='right',
-                                 valign='middle',
-                                 text_size=(dp(150), dp(44))))
-        dir_wrap = CenteredField(text=director, font_size=dp(15),
-                                 pad_lr=dp(10), halign='left')
-        dir_wrap.size_hint_x = 0.58
-        row_dir.add_widget(dir_wrap)
-        fields.add_widget(row_dir)
-
-        center_holder.add_widget(fields)
-        content.add_widget(center_holder)
-
-        # ---------------- растяжка снизу ----------------
-        content.add_widget(Widget(size_hint_y=1))
-
-        # ---------------- кнопки (внизу) ----------------
-        btns = BoxLayout(size_hint_y=None, height=dp(44), spacing=10)
-        save_btn = Button(text="Сохранить",
-                          background_color=(0.3, 0.7, 0.3, 1),
-                          color=(1, 1, 1, 1), font_name=FONT_NAME,
-                          font_size=dp(16), bold=True)
-        cancel_btn = Button(text="Отмена", color=(1, 1, 1, 1),
-                            font_name=FONT_NAME, font_size=dp(16), bold=True)
-        btns.add_widget(save_btn)
-        btns.add_widget(cancel_btn)
-        content.add_widget(btns)
-
-        popup = Popup(title="Подписи в отчёте", content=content,
-                      size_hint=(0.6, 0.5),
-                      title_color=LABEL_LIGHT, title_font=FONT_NAME)
-
-        def on_save(*a):
-            self.app.data['energetic_name'] = (
-                en_wrap.text.strip() or DEFAULT_ENERGETIC)
-            self.app.data['director_name'] = (
-                dir_wrap.text.strip() or DEFAULT_DIRECTOR)
-            save_data(self.app.data)
-            popup.dismiss()
-            self.update_preview()
-
-        save_btn.bind(on_press=on_save)
-        cancel_btn.bind(on_press=popup.dismiss)
-        popup.open()
+    # ---------------- энергетик -------------------------------
+    def _get_signer(self, dept):
+        """Возвращает (должность, ФИО) подписанта для отдела."""
+        signers = self.app.data.get('department_signer', {}) or {}
+        entry = signers.get(dept)
+        if entry and entry.get('name'):
+            return (entry.get('position') or 'Энергетик',
+                    entry.get('name'))
+        # legacy-fallback (старые данные)
+        em = self.app.data.get('department_energetic', {}) or {}
+        name = em.get(dept) or self.app.data.get('energetic_name',
+                                                 DEFAULT_ENERGETIC)
+        return ('Энергетик', name)
 
     # ---------------- вспомогательные ------------------------------------
     def _employees_for_report(self):
@@ -255,9 +188,9 @@ class ReportTab(BoxLayout):
         overtime_flags = self.app.data.get('overtime_flags', {})
         holiday_flags = self.app.data.get('holiday_flags', {})
         org = self.app.data.get('organization', DEFAULT_ORG)
-        energetic_name = self.app.data.get('energetic_name', DEFAULT_ENERGETIC)
-        director_name = self.app.data.get('director_name', DEFAULT_DIRECTOR)
         dept = self._get_dept()
+        signer_pos, signer_name = self._get_signer(dept)
+        director_name = self.app.data.get('director_name', DEFAULT_DIRECTOR)
 
         if not employees:
             self.preview.text = "Нет сотрудников, отмеченных «В табель»."
@@ -282,14 +215,14 @@ class ReportTab(BoxLayout):
             f"  Прогул: {grand.get('прогул', 0)}    "
             f"Текущий простой: {grand.get('текущий_простой', 0)}    "
             f"Опоздания: {grand.get('опозд', 0)}    "
-            f"Целосмен.простои: {grand.get('целосмен_простои', 0)}",
+            f"Целосмен.простой: {grand.get('целосмен_простой', 0)}",
             f"  Роды: {grand.get('отп_роды', 0)}    "
             f"Проч.неявки: {grand.get('проч_неявки', 0)}",
             f"  Всего часов: {fmt_hours(grand.get('часы', 0))}    "
             f"Сверхурочные: {fmt_hours(grand.get('сверхурочные', 0))}    "
             f"Ночные: {fmt_hours(grand.get('ночные', 0))}    "
             f"Праздничные: {fmt_hours(grand.get('праздничные', 0))}",
-            f"  Подписи: Энергетик — {energetic_name}    "
+            f"  Подписи: {signer_pos} — {signer_name}    "
             f"Директор — {director_name}",
             sep,
             "",
@@ -363,9 +296,9 @@ class ReportTab(BoxLayout):
         overtime_flags = self.app.data.get('overtime_flags', {})
         holiday_flags = self.app.data.get('holiday_flags', {})
         org = self.app.data.get('organization', DEFAULT_ORG)
-        energetic_name = self.app.data.get('energetic_name', DEFAULT_ENERGETIC)
-        director_name = self.app.data.get('director_name', DEFAULT_DIRECTOR)
         dept = self._get_dept()
+        signer_pos, signer_name = self._get_signer(dept)
+        director_name = self.app.data.get('director_name', DEFAULT_DIRECTOR)
 
         day_types = [classify_day(y, m, d)
                      for d in range(1, days_in_month + 1)]
@@ -570,30 +503,68 @@ class ReportTab(BoxLayout):
         ws.row_dimensions[2].height = 16
         ws.row_dimensions[row_h2].height = 95
 
-        row += 5
+        row += 5          # отступ от таблицы до блока подписей
 
-        # --- Подписи (используем сохранённые ФИО) ---
-        ws.merge_cells(start_row=row, start_column=3,
-                       end_row=row, end_column=18)
-        c = ws.cell(row=row, column=3,
-                    value=f"Энергетик  ____________  {energetic_name}")
-        c.font = Font(size=11)
-        c.alignment = Alignment(horizontal='center', vertical='center')
+        # Слева — Руководитель, справа — Утверждение.
+        # LEFT_COL — сразу у левого края таблицы (колонка C).
+        # RIGHT_COL — ближе к правому краю (последние ~10 колонок свободны).
+        LEFT_COL  = 3
+        RIGHT_COL = max(LEFT_COL + 22, total_cols - 11)
 
-        mid = max(30, total_cols - 18)
-        ws.merge_cells(start_row=row, start_column=mid,
-                       end_row=row, end_column=mid + 12)
-        c = ws.cell(row=row, column=mid,
-                    value=f"Директор  ____________  {director_name}")
+        # --- Строка 1: метки ---
+        c = ws.cell(row=row, column=LEFT_COL, value="Руководитель:")
         c.font = Font(size=11)
-        c.alignment = Alignment(horizontal='center', vertical='center')
+        c.alignment = Alignment(horizontal='left', vertical='center')
+
+        c = ws.cell(row=row, column=RIGHT_COL, value="Утверждение:")
+        c.font = Font(size=11)
+        c.alignment = Alignment(horizontal='left', vertical='center')
+
+        # --- Строка 2: сами подписи (через 2 строки ниже) ---
+        sig_row = row + 2
+
+        c = ws.cell(row=sig_row, column=LEFT_COL,
+                    value=f"{signer_pos}   __________________   {signer_name}")
+        c.font = Font(size=11)
+        c.alignment = Alignment(horizontal='left', vertical='center',
+                                 indent=12)
+
+        c = ws.cell(row=sig_row, column=RIGHT_COL,
+                    value=f"Директор   __________________   {director_name}")
+        c.font = Font(size=11)
+        c.alignment = Alignment(horizontal='left', vertical='center',
+                                 indent=12)
 
         ws.page_setup.orientation = 'landscape'
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 0
         ws.sheet_properties.pageSetUpPr.fitToPage = True
 
-        path = os.path.join(BASE_DIR, f"tabel_{key}.xlsx")
+        # Область печати — до нижней строки подписей + 2 строки запаса
+        last_print_row = sig_row + 2
+        try:
+            ws.print_area = (f"A1:"
+                             f"{get_column_letter(total_cols)}"
+                             f"{last_print_row}")
+        except Exception:
+            pass
+
+        def _sanitize_folder(name):
+            bad = '\\/:*?"<>|'
+            for ch in bad:
+                name = name.replace(ch, '_')
+            name = name.strip()
+            return name or 'Без отдела'
+
+        dept_folder = _sanitize_folder(dept)
+        out_dir = os.path.join(BASE_DIR, "Табель", dept_folder, str(y))
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception as e:
+            print("Не удалось создать папку:", e)
+
+        path = os.path.join(out_dir, f"tabel_{key}.xlsx")
+
         try:
             wb.save(path)
         except Exception as e:

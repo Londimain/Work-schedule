@@ -37,6 +37,8 @@ def load_data():
                 data.setdefault('organization', DEFAULT_ORG)
                 data.setdefault('energetic_name', DEFAULT_ENERGETIC)
                 data.setdefault('director_name', DEFAULT_DIRECTOR)
+                data.setdefault('department_energetic', {})
+                data.setdefault('signer_positions', ['Энергетик'])
                 for emp in data['employees']:
                     emp.setdefault('department', '')
                     emp.setdefault('show_in_timesheet', True)
@@ -50,7 +52,9 @@ def load_data():
             "holiday_flags": {},
             "departments": list(DEFAULT_DEPARTMENTS),
             "organization": DEFAULT_ORG,
-            "energetic_name": DEFAULT_ENERGETIC,
+            "energetic_name": DEFAULT_ENERGETIC,       # оставляем для совместимости
+            "department_energetic": {},                # НОВОЕ: {отдел: ФИО энергетика}
+            "signer_positions": ['Энергетик'],
             "director_name": DEFAULT_DIRECTOR}
 
 def save_data(data):

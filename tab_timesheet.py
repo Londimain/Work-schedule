@@ -25,22 +25,26 @@ from data_utils import (save_data, classify_day, analyze_row,
                         apply_overtime, fmt_hours)
 from ui_helpers import (add_bottom_border, add_left_border, add_right_border,
                         vsep, sync_vertical, measure_text_width,
-                        HorizontalScrollView)
-from ui_widgets import (VerticalLabel, DayCell, ResultCell, DayHeader)
-
+                        HorizontalScrollView, SmartScrollView,
+                        NoOverscrollEffect)   # <— новое
+from ui_widgets import (VerticalLabel, DayCell, ResultCell, DayHeader,
+                        NavTextInput)
 
 def _stretch_grid(grid, sv):
     """Grid должен быть не меньше ScrollView по высоте,
     иначе Kivy прижимает содержимое к низу окна просмотра."""
     def _sync(*_):
         try:
-            grid.height = max(grid.minimum_height, sv.height)
+            h = max(grid.minimum_height, sv.height)
+            if abs(grid.height - h) > 0.5:      # фильтр — не трогаем,
+                grid.height = h                 # если высота та же
         except Exception:
             pass
-    grid.bind(minimum_height=_sync)
+    # Слушаем только sv.height. minimum_height НЕ биндим —
+    # иначе цикл «высота → пересчёт → высота → дрожь».
     sv.bind(height=_sync)
     Clock.schedule_once(_sync, 0)
-
+    Clock.schedule_once(_sync, 0.1)
 
 class TimesheetTab(BoxLayout):
     def __init__(self, app, **kwargs):
@@ -60,6 +64,16 @@ class TimesheetTab(BoxLayout):
         self._days_sv = None
         self._right_sv = None
         self._days_in_month = 0
+        self._sel_anchor = None
+        self._sel_current = None
+
+        # --- трекинг shift ---
+        self._shift_held = False
+        from kivy.core.window import Window
+        Window.bind(on_keyboard=self._on_window_keyboard,
+                    on_key_down=self._on_win_key_down,
+                    on_key_up=self._on_win_key_up)
+
         self._build()
 
     def _build(self):
@@ -136,6 +150,17 @@ class TimesheetTab(BoxLayout):
             self._save_for_key(self._last_key)
         self.load_timesheet()
 
+    # ---------------- трекинг Shift --------------------------------------
+    def _on_win_key_down(self, window, key, scancode, codepoint, modifiers):
+        if 'shift' in (modifiers or []):
+            self._shift_held = True
+            NavTextInput.shift_state['held'] = True
+
+    def _on_win_key_up(self, window, key, scancode):
+        if key in (303, 304):    # левый / правый Shift
+            self._shift_held = False
+            NavTextInput.shift_state['held'] = False
+
     def _save_for_key(self, key):
         ts = self.app.data['timesheets'].setdefault(key, {})
         for emp_id, cells in self.day_inputs.items():
@@ -165,20 +190,472 @@ class TimesheetTab(BoxLayout):
 
     # ---------------- навигация ------------------------------------------
     def _make_day_nav_callback(self, emp_id, day_idx):
-        """day_idx: 1-based (день месяца)."""
         def cb(key, modifiers):
             return self._handle_day_nav(emp_id, day_idx, key, modifiers)
         return cb
 
     def _make_result_nav_callback(self, emp_id, col_idx):
-        """col_idx: 0-based (индекс в RIGHT_COLUMNS)."""
         def cb(key, modifiers):
             return self._handle_result_nav(emp_id, col_idx, key, modifiers)
         return cb
 
-    # ------ обработчики клавиш -------------------------------------------
+    # ---------------- Ctrl+C / Ctrl+V ------------------------------------
+    def _on_extra_key(self, key, modifiers):
+        """Перехват клавиш, приходящий раньше стандартной обработки TextInput."""
+        mods = modifiers or []
+        ctrl = 'ctrl' in mods
+
+        # ---- Del (key = 127) ----
+        if key == 127:
+            cell = self._get_focused_cell()
+            if cell is not None:
+                try:
+                    if cell.input.selection_text:
+                        return False
+                except Exception:
+                    pass
+            if (self._sel_anchor and self._sel_current
+                    and self._sel_anchor != self._sel_current):
+                if self._clear_selection_cells():
+                    return True
+                return False
+            if cell is not None:
+                cell.input.text = ''
+                return True
+            return False
+
+        if not ctrl:
+            return False
+
+        # ---- Ctrl+C ----
+        if key == 99:   # c
+            if (self._sel_anchor and self._sel_current
+                    and self._sel_anchor != self._sel_current):
+                return self._save_selection_to_clipboard()
+            cell = self._get_focused_cell()
+            if cell is not None:
+                value = cell.input.text
+                try:
+                    from kivy.core.clipboard import Clipboard
+                    Clipboard.copy(value)
+                    return True
+                except Exception:
+                    return False
+            return False
+
+        # ---- Ctrl+V ----
+        if key == 118:  # v
+            try:
+                from kivy.core.clipboard import Clipboard
+                txt = Clipboard.paste() or ''
+            except Exception:
+                txt = ''
+
+            if not txt:
+                return False
+
+            lines = txt.replace('\r\n', '\n').split('\n')
+            while len(lines) > 1 and lines[-1] == '':
+                lines.pop()
+
+            if len(lines) == 1 and '\t' not in lines[0]:
+                cell = self._get_focused_cell()
+                if cell is None:
+                    return False
+                value = lines[0]
+                cell.input.text = value
+                try:
+                    cell.input.cursor = (len(value), 0)
+                except Exception:
+                    pass
+                return True
+
+            if self._paste_tsv_from_text(lines):
+                return True
+            return False
+
+        return False
+
+    def _on_window_keyboard(self, window, key, scancode, codepoint, modifiers):
+        """Самый ранний перехват клавиш в Kivy.
+
+        Возврат True останавливает дальнейшую обработку.
+
+        Здесь ловим Ctrl+C / Ctrl+V и Del. Это единственное место,
+        которое срабатывает, даже если ни одна ячейка не в фокусе —
+        например после Shift-выделения (там мы специально снимаем
+        фокус, чтобы не оставалось встроенного текстового выделения).
+        """
+        mods = modifiers or []
+        ctrl = 'ctrl' in mods
+
+        # ---- Ctrl+C: копируем выделение (диапазон или одну ячейку) ----
+        if ctrl and key == 99:      # 'c'
+            if self._sel_anchor and self._sel_current:
+                if self._save_selection_to_clipboard():
+                    return True
+            # Если выделения ячеек нет — пусть обрабатывает TextInput
+            # (там есть путь «скопировать содержимое активной ячейки»).
+            return False
+
+        # ---- Ctrl+V: вставляем от якоря выделения ----
+        if ctrl and key == 118:     # 'v'
+            if self._sel_anchor and self._sel_current:
+                try:
+                    from kivy.core.clipboard import Clipboard
+                    txt = Clipboard.paste() or ''
+                except Exception:
+                    txt = ''
+                if not txt:
+                    return False
+                lines = txt.replace('\r\n', '\n').split('\n')
+                while len(lines) > 1 and lines[-1] == '':
+                    lines.pop()
+                # _paste_tsv_from_text работает и для одиночного
+                # значения (без таба), и для матрицы TSV —
+                # в обоих случаях вставка идёт от _sel_anchor.
+                if self._paste_tsv_from_text(lines):
+                    return True
+            return False
+
+        # ---- Del (key = 127) ----
+        if key != 127:
+            return False
+
+        cell = self._get_focused_cell()
+
+        # Если внутри одной ячейки выделен фрагмент — не мешаем TextInput
+        if cell is not None:
+            try:
+                if cell.input.selection_text:
+                    return False
+            except Exception:
+                pass
+
+        # Если выделено 2+ ячеек — очищаем весь диапазон
+        if (self._sel_anchor and self._sel_current
+                and self._sel_anchor != self._sel_current):
+            if self._clear_selection_cells():
+                return True
+            return False
+
+        # Иначе — очищаем содержимое всей активной ячейки
+        if cell is not None:
+            cell.input.text = ''
+            return True
+        return False
+
+    def _save_selection_to_clipboard(self):
+        bounds = self._selection_bounds()
+        if bounds is None:
+            return False
+        kind, ia, ib, ca, cb = bounds
+        emps = self._employees_order
+        rows = []
+        if kind == 'd':
+            for i in range(ia, ib + 1):
+                emp = emps[i]
+                cells = self.day_inputs.get(emp, [])
+                row = []
+                for c in range(ca, cb + 1):
+                    if 1 <= c <= len(cells):
+                        row.append(cells[c - 1].input.text)
+                    else:
+                        row.append('')
+                rows.append('\t'.join(row))
+        else:
+            for i in range(ia, ib + 1):
+                emp = emps[i]
+                labels = self.total_labels.get(emp, {})
+                row = []
+                for c in range(ca, cb + 1):
+                    if 0 <= c < len(RIGHT_COLUMNS):
+                        key_ = RIGHT_COLUMNS[c][1]
+                        cell = labels.get(key_)
+                        row.append(cell.input.text if cell else '')
+                    else:
+                        row.append('')
+                rows.append('\t'.join(row))
+        text = '\n'.join(rows)
+        try:
+            from kivy.core.clipboard import Clipboard
+            Clipboard.copy(text)
+            return True
+        except Exception:
+            return False
+
+    def _paste_tsv_from_text(self, lines):
+        """Вставить распарсенный TSV от активной ячейки
+        (или от якоря выделения, если оно есть)."""
+        kind = None
+        emp_id_start = None
+        idx_start = None
+
+        if self._sel_anchor:
+            kind = self._sel_anchor[0]
+            emp_id_start = self._sel_anchor[1]
+            idx_start = self._sel_anchor[2]
+        else:
+            cell = self._get_focused_cell()
+            info = self._cell_info(cell) if cell else None
+            if info is not None:
+                emp_id_start, idx_start, kind = info
+
+        if emp_id_start is None or kind is None:
+            return False
+
+        emps = self._employees_order
+        try:
+            i0 = emps.index(emp_id_start)
+        except ValueError:
+            return False
+
+        if kind == 'd':
+            for r, line in enumerate(lines):
+                ei = i0 + r
+                if ei >= len(emps):
+                    break
+                emp = emps[ei]
+                cells = self.day_inputs.get(emp, [])
+                parts = line.split('\t')
+                for c, val in enumerate(parts):
+                    d = idx_start + c
+                    if 1 <= d <= len(cells):
+                        cells[d - 1].input.text = val
+            self._schedule_save()
+        else:
+            overrides = self._get_overrides()
+            affected = []
+            for r, line in enumerate(lines):
+                ei = i0 + r
+                if ei >= len(emps):
+                    break
+                emp = emps[ei]
+                labels = self.total_labels.get(emp, {})
+                emp_over = overrides.setdefault(emp, {})
+                parts = line.split('\t')
+                for c, val in enumerate(parts):
+                    cc = idx_start + c
+                    if 0 <= cc < len(RIGHT_COLUMNS):
+                        key_ = RIGHT_COLUMNS[cc][1]
+                        cell = labels.get(key_)
+                        v = val.strip()
+                        if v == '':
+                            emp_over.pop(key_, None)
+                        else:
+                            emp_over[key_] = v
+                        if cell is not None and cell.input.focused:
+                            cell.input.text = v
+                affected.append(emp)
+            for emp_id in affected:
+                try:
+                    self._recalc_totals(emp_id)
+                except Exception:
+                    pass
+            self._schedule_save()
+        return True
+
+    def _clear_selection_cells(self):
+        """Очистить содержимое всех ячеек выделения."""
+        bounds = self._selection_bounds()
+        if bounds is None:
+            return False
+        kind, ia, ib, ca, cb = bounds
+        emps = self._employees_order
+
+        if kind == 'd':
+            for i in range(ia, ib + 1):
+                emp = emps[i]
+                cells = self.day_inputs.get(emp, [])
+                for d in range(ca, cb + 1):
+                    if 1 <= d <= len(cells):
+                        cells[d - 1].input.text = ''
+            for i in range(ia, ib + 1):
+                try:
+                    self._recalc_totals(emps[i])
+                except Exception:
+                    pass
+        else:
+            overrides = self._get_overrides()
+            for i in range(ia, ib + 1):
+                emp_id = emps[i]
+                labels = self.total_labels.get(emp_id, {})
+                emp_over = overrides.setdefault(emp_id, {})
+                for c in range(ca, cb + 1):
+                    if 0 <= c < len(RIGHT_COLUMNS):
+                        key_ = RIGHT_COLUMNS[c][1]
+                        emp_over.pop(key_, None)
+                        cell = labels.get(key_)
+                        if cell is not None and cell.input.focused:
+                            cell.input.text = ''
+            for i in range(ia, ib + 1):
+                try:
+                    self._recalc_totals(emps[i])
+                except Exception:
+                    pass
+        self._schedule_save()
+        return True
+
+    def _get_focused_cell(self):
+        """Найти ячейку, чей TextInput сейчас в фокусе."""
+        for cells in self.day_inputs.values():
+            for c in cells:
+                try:
+                    if c.input.focused:
+                        return c
+                except Exception:
+                    pass
+        for labels in self.total_labels.values():
+            for c in labels.values():
+                try:
+                    if c.input.focused:
+                        return c
+                except Exception:
+                    pass
+        return None
+
+    def _blur_all_cells(self):
+        """Снять фокус со всех ячеек вкладки."""
+        for cells in self.day_inputs.values():
+            for c in cells:
+                try:
+                    if c.input.focused:
+                        c.input.focus = False
+                except Exception:
+                    pass
+        for labels in self.total_labels.values():
+            for c in labels.values():
+                try:
+                    if c.input.focused:
+                        c.input.focus = False
+                except Exception:
+                    pass
+
+    # ---------------- выделение диапазона Shift+клик ---------------------
+    def _on_cell_touch_down(self, cell, touch):
+        info = self._cell_info(cell)
+        if info is None:
+            return
+        emp_id, idx, kind = info
+        if self._shift_held:
+            # Снимаем «остаточный» фокус/курсор с любых ячеек —
+            # он мог остаться от предыдущего одиночного клика.
+            # Иначе встроенное текстовое выделение остаётся поверх
+            # фоновой подсветки.
+            self._blur_all_cells()
+
+            if self._sel_anchor is None or self._sel_anchor[0] != kind:
+                self._sel_anchor = (kind, emp_id, idx)
+            self._sel_current = (kind, emp_id, idx)
+            self._refresh_highlights()
+        else:
+            if self._sel_anchor or self._sel_current:
+                self._clear_selection()
+
+    def _cell_info(self, cell):
+        for emp_id, cells in self.day_inputs.items():
+            for idx, c in enumerate(cells, start=1):
+                if c is cell:
+                    return (emp_id, idx, 'd')
+        for emp_id, labels in self.total_labels.items():
+            for col_idx, (_, key_, _) in enumerate(RIGHT_COLUMNS):
+                c = labels.get(key_)
+                if c is cell:
+                    return (emp_id, col_idx, 'r')
+        return None
+
+    def _clear_selection(self):
+        self._sel_anchor = None
+        self._sel_current = None
+        self._refresh_highlights()
+
+    def _refresh_highlights(self):
+        for emp_cells in self.day_inputs.values():
+            for c in emp_cells:
+                try:
+                    c.set_highlight(False)
+                except Exception:
+                    pass
+        for labels in self.total_labels.values():
+            for c in labels.values():
+                try:
+                    c.set_highlight(False)
+                except Exception:
+                    pass
+
+        if not self._sel_anchor or not self._sel_current:
+            return
+        a = self._sel_anchor
+        b = self._sel_current
+        if a[0] != b[0]:
+            return
+        kind = a[0]
+        idx_a, idx_b = a[2], b[2]
+
+        emps = self._employees_order
+        try:
+            ia = emps.index(a[1])
+            ib = emps.index(b[1])
+        except ValueError:
+            return
+        if ia > ib:
+            ia, ib = ib, ia
+        if idx_a > idx_b:
+            idx_a, idx_b = idx_b, idx_a
+
+        if kind == 'd':
+            for i in range(ia, ib + 1):
+                emp = emps[i]
+                cells = self.day_inputs.get(emp, [])
+                for d in range(idx_a, idx_b + 1):
+                    if 1 <= d <= len(cells):
+                        try:
+                            cells[d - 1].set_highlight(True)
+                        except Exception:
+                            pass
+        else:
+            for i in range(ia, ib + 1):
+                emp = emps[i]
+                labels = self.total_labels.get(emp, {})
+                for cc in range(idx_a, idx_b + 1):
+                    if 0 <= cc < len(RIGHT_COLUMNS):
+                        key_ = RIGHT_COLUMNS[cc][1]
+                        cell = labels.get(key_)
+                        if cell is not None:
+                            try:
+                                cell.set_highlight(True)
+                            except Exception:
+                                pass
+
+    def _selection_bounds(self):
+        if not self._sel_anchor or not self._sel_current:
+            return None
+        a = self._sel_anchor
+        b = self._sel_current
+        if a[0] != b[0]:
+            return None
+        kind = a[0]
+        emps = self._employees_order
+        try:
+            ia = emps.index(a[1])
+            ib = emps.index(b[1])
+        except ValueError:
+            return None
+        if ia > ib:
+            ia, ib = ib, ia
+        ca, cb = a[2], b[2]
+        if ca > cb:
+            ca, cb = cb, ca
+        return (kind, ia, ib, ca, cb)
+
+    # ------ обработчики клавиш (навигация) -------------------------------
     def _handle_day_nav(self, emp_id, day_idx, key, modifiers):
-        shift = 'shift' in (modifiers or [])
+        mods = modifiers or []
+        # Ctrl+... обрабатывается в _on_extra_key
+        if 'ctrl' in mods:
+            return False
+
+        shift = 'shift' in mods
 
         if key == 9:  # Tab
             if shift:
@@ -214,7 +691,11 @@ class TimesheetTab(BoxLayout):
         return False
 
     def _handle_result_nav(self, emp_id, col_idx, key, modifiers):
-        shift = 'shift' in (modifiers or [])
+        mods = modifiers or []
+        if 'ctrl' in mods:
+            return False
+
+        shift = 'shift' in mods
 
         if key == 9:  # Tab
             if shift:
@@ -259,17 +740,13 @@ class TimesheetTab(BoxLayout):
         return None
 
     def _focus_next_day(self, emp_id, day_idx):
-        """Tab → следующий день. На последнем дне — первый результат
-        того же сотрудника."""
         cells = self.day_inputs.get(emp_id, [])
         if day_idx < len(cells):
-            self._focus_cell(cells[day_idx])  # 0-based
+            self._focus_cell(cells[day_idx])
             return True
         return self._focus_result_first(emp_id)
 
     def _focus_prev_day(self, emp_id, day_idx):
-        """Shift+Tab → предыдущий день. На первом дне — последний
-        результат предыдущего сотрудника."""
         if day_idx > 1:
             cells = self.day_inputs.get(emp_id, [])
             if day_idx - 2 < len(cells):
@@ -331,8 +808,6 @@ class TimesheetTab(BoxLayout):
         return True
 
     def _focus_result_next(self, emp_id, col_idx):
-        """Tab → следующий результат. На последнем — первый день
-        следующего сотрудника."""
         if col_idx + 1 < len(RIGHT_COLUMNS):
             return self._focus_result_by_index(emp_id, col_idx + 1)
         emps = self._employees_order
@@ -348,8 +823,6 @@ class TimesheetTab(BoxLayout):
         return False
 
     def _focus_result_prev(self, emp_id, col_idx):
-        """Shift+Tab → предыдущий результат. На первом — последний день
-        того же сотрудника."""
         if col_idx > 0:
             return self._focus_result_by_index(emp_id, col_idx - 1)
         cells = self.day_inputs.get(emp_id, [])
@@ -380,10 +853,12 @@ class TimesheetTab(BoxLayout):
 
     # ------ сам фокус -----------------------------------------------------
     def _focus_cell(self, cell):
-        """Фокус на ячейке дня (с горизонтальной прокруткой)."""
         try:
             cell.input.focus = True
-            Clock.schedule_once(lambda dt: self._select_all_safe(cell), 0)
+            # select_all не вызываем: замена содержимого при вводе
+            # обеспечивается флагом NavTextInput._just_focused —
+            # первый печатный символ сам очищает ячейку.
+            # Без select_all нет синего текстового выделения поверх цифр.
             sv = self._days_sv
             if sv is not None:
                 Clock.schedule_once(lambda dt: self._scroll_to_safe(sv, cell), 0)
@@ -391,11 +866,8 @@ class TimesheetTab(BoxLayout):
             pass
 
     def _focus_result_cell(self, cell):
-        """Фокус на ячейке итогов (без автопрокрутки — вся панель
-        обычно помещается на экране, а вертикаль синхронизирована)."""
         try:
             cell.input.focus = True
-            Clock.schedule_once(lambda dt: self._select_all_safe(cell), 0)
         except Exception:
             pass
 
@@ -408,7 +880,6 @@ class TimesheetTab(BoxLayout):
 
     @staticmethod
     def _scroll_to_safe(sv, cell):
-        """Прокрутка по горизонтали к ячейке. Вертикаль не трогаем."""
         try:
             if not sv.children:
                 return
@@ -417,14 +888,11 @@ class TimesheetTab(BoxLayout):
             view_w = sv.width
             if content_w <= view_w or view_w <= 0:
                 return
-
             cell_left = cell.x
             cell_right = cell.x + cell.width
-
             cur_x = sv.scroll_x * (content_w - view_w)
             if cur_x <= cell_left and cell_right <= cur_x + view_w:
                 return
-
             target_x = cell_left + cell.width / 2.0 - view_w / 2.0
             max_x = content_w - view_w
             if target_x < 0:
@@ -485,6 +953,21 @@ class TimesheetTab(BoxLayout):
             emp_over.pop(col_key, None)
             self._recalc_totals(emp_id)
         else:
+            # Убираем ведущие нули, если сразу за ними идёт цифра
+            # (кейс: в ячейке было «0», пользователь набрал «5» → «05»).
+            if len(v) > 1 and v[0] == '0' and v[1].isdigit():
+                v_norm = v.lstrip('0') or '0'
+                if v_norm != v:
+                    self._suppress_result_cb = True
+                    try:
+                        cell.input.text = v_norm
+                        try:
+                            cell.input.cursor = (len(v_norm), 0)
+                        except Exception:
+                            pass
+                    finally:
+                        self._suppress_result_cb = False
+                    v = v_norm
             emp_over[col_key] = v
         self._schedule_save()
 
@@ -493,7 +976,11 @@ class TimesheetTab(BoxLayout):
         if cell is None:
             return
         if focused:
-            Clock.schedule_once(lambda dt: cell.input.select_all(), 0)
+            # Ячейка получила фокус — _just_focused уже выставлен в
+            # CenteredField._on_focus. select_all не нужен: первый
+            # печатный символ сам заменит содержимое, а синего
+            # текстового выделения поверх цифр не будет.
+            pass
         else:
             if cell.input.text.strip() == '':
                 self._recalc_totals(emp_id)
@@ -608,7 +1095,6 @@ class TimesheetTab(BoxLayout):
             BORDER_BLACK = (0, 0, 0, 1)
             LINE_T = 1
 
-            # ---- Верхняя полоса ----------------------------------------
             header_strip = BoxLayout(orientation='horizontal',
                                      size_hint_y=None, height=HEAD_TOP_H,
                                      spacing=0)
@@ -669,14 +1155,12 @@ class TimesheetTab(BoxLayout):
 
             self.main_container.add_widget(header_strip)
 
-            # ---- Тело --------------------------------------------------
             body = BoxLayout(orientation='horizontal', spacing=0)
 
-            # левая панель
-            left_sv = ScrollView(do_scroll_x=False, do_scroll_y=True,
+            left_sv = SmartScrollView(do_scroll_x=False, do_scroll_y=True,
                                  size_hint=(None, 1), width=LEFT_W,
                                  bar_width=dp(8), scroll_type=['bars'],
-                                 effect_cls='ScrollEffect')
+                                 effect_cls=NoOverscrollEffect)
             left_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
             left_grid.width = LEFT_W
             _stretch_grid(left_grid, left_sv)
@@ -719,11 +1203,10 @@ class TimesheetTab(BoxLayout):
             left_sv.add_widget(left_grid)
             body.add_widget(left_sv)
 
-            # центральная панель с днями
             days_sv = HorizontalScrollView(do_scroll_x=True, do_scroll_y=True,
                                             bar_width=dp(10),
                                             scroll_type=['bars', 'content'],
-                                            effect_cls='ScrollEffect')
+                                            effect_cls=NoOverscrollEffect)
             self._days_sv = days_sv
             days_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
             days_grid.bind(minimum_width=days_grid.setter('width'))
@@ -753,6 +1236,8 @@ class TimesheetTab(BoxLayout):
                                     day_type=day_types[d - 1],
                                     show_right=True,
                                     on_key_callback=cb,
+                                    on_cell_touch_down=self._on_cell_touch_down,
+                                    extra_key_callback=self._on_extra_key,
                                     size_hint=(None, None),
                                     size=(W_DAY, ROW_H))
                     cell.input.bind(text=lambda inst, val, eid=emp_id:
@@ -765,11 +1250,10 @@ class TimesheetTab(BoxLayout):
             days_sv.add_widget(days_grid)
             body.add_widget(days_sv)
 
-            # правая панель итогов
-            right_sv = ScrollView(do_scroll_x=False, do_scroll_y=True,
+            right_sv = SmartScrollView(do_scroll_x=False, do_scroll_y=True,
                                   size_hint=(None, 1), width=RIGHT_W,
                                   bar_width=dp(8), scroll_type=['bars'],
-                                  effect_cls='ScrollEffect')
+                                  effect_cls=NoOverscrollEffect)
             self._right_sv = right_sv
             right_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
             right_grid.width = RIGHT_W
@@ -807,6 +1291,8 @@ class TimesheetTab(BoxLayout):
                         border_color=BORDER_BLACK, border_th=LINE_T,
                         size_hint=(None, None), size=(w, ROW_H),
                         on_key_callback=cb,
+                        on_cell_touch_down=self._on_cell_touch_down,
+                        extra_key_callback=self._on_extra_key,
                     )
                     cell.input.bind(
                         text=lambda inst, val, eid=emp_id, k=key_:
