@@ -23,11 +23,11 @@ from config import (FONT_NAME, LABEL_LIGHT, DEFAULT_POSITIONS,
                     DEFAULT_DEPARTMENTS, DEFAULT_ORG,
                     DEPT_BAR_BG, DEPT_BAR_FG,
                     DEFAULT_ENERGETIC, DELETE_PASSWORD)
-from data_utils import save_data
+from data_utils import save_data, set_show_in_timesheet
 from ui_helpers import (add_bottom_border, add_top_border,
                         add_left_border, add_right_border, vsep,
                         NoOverscrollEffect, ask_password_and_run)
-from ui_widgets import CenteredField, CenteredSpinner
+from ui_widgets import CenteredSpinner
 
 
 class EmployeesTab(BoxLayout):
@@ -67,13 +67,21 @@ class EmployeesTab(BoxLayout):
         top.add_widget(Label(text="Организация:", size_hint_x=None,
                              width=dp(110), color=LABEL_LIGHT,
                              font_name=FONT_NAME))
-        org_wrap = CenteredField(
+        # --- обычный TextInput, посимвольное редактирование ---
+        org_wrap = TextInput(
             text=self.app.data.get('organization', DEFAULT_ORG),
-            font_size=dp(14), pad_lr=dp(10), halign='left',
+            multiline=False,
+            font_size=dp(14), font_name=FONT_NAME,
+            foreground_color=(0.05, 0.05, 0.05, 1),
+            background_color=(1, 1, 1, 1),
+            cursor_color=(0.10, 0.30, 0.70, 1),
+            cursor_width=dp(2),
+            selection_color=(0.20, 0.45, 0.90, 0.40),
+            padding=[dp(8), dp(9), dp(8), dp(6)],
+            size_hint=(None, None),
+            size=(dp(320), dp(30)),
         )
-        org_wrap.size_hint = (None, None)
-        org_wrap.size = (dp(320), dp(38))
-        org_wrap.input.bind(text=self._on_org_change)
+        org_wrap.bind(text=self._on_org_change)
         top.add_widget(org_wrap)
         self.org_wrap = org_wrap
 
@@ -105,7 +113,7 @@ class EmployeesTab(BoxLayout):
 
     def _active_dept(self):
         for emp in self.app.data['employees']:
-            if emp.get('show_in_timesheet', True):
+            if emp.get('show_in_timesheet', False):
                 return emp.get('department', '')
         return ''
 
@@ -130,22 +138,24 @@ class EmployeesTab(BoxLayout):
 
     def _toggle_in_timesheet(self, idx, value):
         try:
+            emp = self.app.data['employees'][idx]
+            emp_id = emp.get('id')
             if value:
-                emp = self.app.data['employees'][idx]
                 my_dept = emp.get('department', '')
                 active = self._active_dept()
                 if active and active != my_dept:
                     self._show_dept_conflict(active)
                     self.refresh()
                     return
-            self.app.data['employees'][idx]['show_in_timesheet'] = bool(value)
-            save_data(self.app.data)
+            emp['show_in_timesheet'] = bool(value)
+            if emp_id:
+                set_show_in_timesheet(emp_id, bool(value))
             self.refresh()
         except Exception:
             pass
 
     def _add_employee_row(self, idx, emp):
-        show_in = emp.get('show_in_timesheet', True)
+        show_in = emp.get('show_in_timesheet', False)
         row = BoxLayout(size_hint_y=None, height=dp(42), spacing=0)
         row.add_widget(Label(text=str(idx + 1), size_hint_x=0.4,
                              font_name=FONT_NAME, font_size=dp(15),
@@ -204,7 +214,7 @@ class EmployeesTab(BoxLayout):
         lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
         bar.add_widget(lbl)
         self.list_layout.add_widget(bar)
-        
+
     def _build_header(self):
         """Строка-шапка таблицы — не прокручивается."""
         self.header_holder.clear_widgets()
@@ -297,10 +307,17 @@ class EmployeesTab(BoxLayout):
             color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(15),
             halign='right', valign='middle',
             text_size=(LBL_W, dp(38))))
-        name_w = CenteredField(text=emp.get('name', ''), font_size=dp(15),
-                               pad_lr=dp(10), halign='left')
-        name_w.size_hint = (1, None)
-        name_w.height = dp(32)
+        name_w = TextInput(
+            text=emp.get('name', ''), multiline=False,
+            font_size=dp(14), font_name=FONT_NAME,
+            foreground_color=(0.05, 0.05, 0.05, 1),
+            background_color=(1, 1, 1, 1),
+            cursor_color=(0.10, 0.30, 0.70, 1),
+            cursor_width=dp(2),
+            selection_color=(0.20, 0.45, 0.90, 0.40),
+            padding=[dp(8), dp(10), dp(8), dp(10)],
+            size_hint=(1, 1),
+        )
         row_name.add_widget(name_w)
         fields.add_widget(row_name)
 
@@ -391,9 +408,17 @@ class EmployeesTab(BoxLayout):
 
         content = BoxLayout(orientation='vertical', spacing=8, padding=10)
         add_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=5)
-        new_pos_wrap = CenteredField(text='', font_size=dp(15),
-                                      pad_lr=dp(10), halign='left')
-        new_pos_wrap.size_hint_x = 0.7
+        new_pos_wrap = TextInput(
+            text='', multiline=False,
+            font_size=dp(14), font_name=FONT_NAME,
+            foreground_color=(0.05, 0.05, 0.05, 1),
+            background_color=(1, 1, 1, 1),
+            cursor_color=(0.10, 0.30, 0.70, 1),
+            cursor_width=dp(2),
+            selection_color=(0.20, 0.45, 0.90, 0.40),
+            padding=[dp(8), dp(13), dp(8), dp(13)],
+            size_hint=(0.7, 1),
+        )
         add_row.add_widget(new_pos_wrap)
         add_btn = Button(text="Добавить", size_hint_x=0.3,
                          background_color=(0.3, 0.7, 0.3, 1),
@@ -450,10 +475,17 @@ class EmployeesTab(BoxLayout):
                                 color=LABEL_LIGHT, halign='center',
                                 font_name=FONT_NAME, font_size=dp(15),
                                 outline_color=(0, 0, 0, 1), outline_width=1))
-            edit_wrap = CenteredField(text=old_name, font_size=dp(15),
-                                       pad_lr=dp(10), halign='left')
-            edit_wrap.size_hint_y = None
-            edit_wrap.height = dp(40)
+            edit_wrap = TextInput(
+                text=old_name, multiline=False,
+                font_size=dp(14), font_name=FONT_NAME,
+                foreground_color=(0.05, 0.05, 0.05, 1),
+                background_color=(1, 1, 1, 1),
+                cursor_color=(0.10, 0.30, 0.70, 1),
+                cursor_width=dp(2),
+                selection_color=(0.20, 0.45, 0.90, 0.40),
+                padding=[dp(8), dp(10), dp(8), dp(10)],
+                size_hint=(1, None), height=dp(38),
+            )
             c.add_widget(edit_wrap)
             btns = BoxLayout(size_hint_y=None, height=dp(40), spacing=10)
             ok = Button(text="Сохранить",
@@ -592,7 +624,7 @@ class EmployeesTab(BoxLayout):
             rebuild_list()
 
         add_btn.bind(on_press=add_position)
-        new_pos_wrap.input.bind(on_text_validate=add_position)
+        new_pos_wrap.bind(on_text_validate=add_position)
         rebuild_list()
         list_scroll.add_widget(list_grid)
         content.add_widget(list_scroll)
@@ -736,8 +768,8 @@ class EmployeesTab(BoxLayout):
                     cursor_color=(0.10, 0.30, 0.70, 1),
                     cursor_width=dp(2),
                     selection_color=(0.20, 0.45, 0.90, 0.40),
-                    padding=[dp(8), dp(6), dp(8), dp(6)],
-                    size_hint=(1, None), height=dp(32),
+                    padding=[dp(8), dp(11), dp(8), dp(6)],
+                    size_hint=(1, 1),
                 )
 
             # --- Название отдела ---
@@ -760,7 +792,7 @@ class EmployeesTab(BoxLayout):
                 text_size=(LBL_W, dp(38))))
 
             pos_row = BoxLayout(orientation='horizontal', spacing=6,
-                                 size_hint=(1, None), height=dp(32))
+                                 size_hint=(1, None), height=dp(38))
             pos_w = _make_input(old_pos)
             pos_row.add_widget(pos_w)
 
@@ -818,6 +850,8 @@ class EmployeesTab(BoxLayout):
                         font_name=FONT_NAME, font_size=dp(15),
                         outline_color=(0, 0, 0, 1), outline_width=1))
                     new_wrap = _make_input(rename_old)
+                    new_wrap.size_hint = (1, None)
+                    new_wrap.height = dp(38)
                     c.add_widget(new_wrap)
                     btns2 = BoxLayout(size_hint_y=None,
                                       height=dp(40), spacing=10)

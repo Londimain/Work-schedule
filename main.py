@@ -49,6 +49,7 @@ from kivy.metrics import dp
 from kivy.graphics import Color, Rectangle
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.textinput import TextInput
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
@@ -68,7 +69,6 @@ from kivy.uix.floatlayout import FloatLayout
 
 from config import (DATA_FILE, decorate_title, apply_app_icon,
                     FONT_NAME, LABEL_LIGHT, DEFAULT_DIRECTOR)
-from ui_widgets import CenteredField
 
 # Цвета верхней панели
 TOPBAR_BG = (0.11, 0.12, 0.15, 1)
@@ -252,13 +252,20 @@ class TabelApp(App):
         dir_field_holder = AnchorLayout(anchor_x='left', anchor_y='center',
                                          size_hint=(None, 1),
                                          width=dp(270))
-        director_wrap = CenteredField(
+        director_wrap = TextInput(
             text=self.data.get('director_name', DEFAULT_DIRECTOR),
-            font_size=dp(14), pad_lr=dp(8), halign='left',
+            multiline=False,
+            font_size=dp(14), font_name=FONT_NAME,
+            foreground_color=(0.05, 0.05, 0.05, 1),
+            background_color=(1, 1, 1, 1),
+            cursor_color=(0.10, 0.30, 0.70, 1),
+            cursor_width=dp(2),
+            selection_color=(0.20, 0.45, 0.90, 0.40),
+            padding=[dp(8), dp(6), dp(8), dp(6)],
+            size_hint=(None, None),
+            size=(dp(270), dp(30)),
         )
-        director_wrap.size_hint = (None, None)
-        director_wrap.size = (dp(270), dp(30))
-        director_wrap.input.bind(text=self._on_director_change)
+        director_wrap.bind(text=self._on_director_change)
         dir_field_holder.add_widget(director_wrap)
         director_box.add_widget(dir_field_holder)
 

@@ -186,7 +186,7 @@ class TimesheetTab(BoxLayout):
 
     def _employees_for_ts(self):
         return [emp for emp in self.app.data['employees']
-                if emp.get('show_in_timesheet', True)]
+                if emp.get('show_in_timesheet', False)]
 
     # ---------------- навигация ------------------------------------------
     def _make_day_nav_callback(self, emp_id, day_idx):

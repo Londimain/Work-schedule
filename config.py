@@ -220,3 +220,24 @@ def _apply_icon_kivy():
 def apply_app_icon(window_title):
     _apply_icon_kivy()
     _apply_icon_windows(window_title)
+    
+# =========================================================================
+# ЛОКАЛЬНЫЕ (PER-MACHINE) НАСТРОЙКИ
+# =========================================================================
+def _local_dir():
+    """Папка для локальных настроек этого компьютера.
+    Лежит вне папки программы, поэтому не попадает в общую синхронизацию."""
+    if platform.system() == 'Windows':
+        base = os.environ.get('APPDATA') or os.path.expanduser('~')
+    else:
+        base = (os.environ.get('XDG_CONFIG_HOME')
+                or os.path.expanduser('~/.config'))
+    d = os.path.join(base, 'TabelApp')
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+LOCAL_DIR = _local_dir()
+LOCAL_FILE = os.path.join(LOCAL_DIR, 'local.json')

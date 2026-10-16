@@ -121,7 +121,7 @@ class ReportTab(BoxLayout):
     # ---------------- вспомогательные ------------------------------------
     def _employees_for_report(self):
         return [emp for emp in self.app.data['employees']
-                if emp.get('show_in_timesheet', True)]
+                if emp.get('show_in_timesheet', False)]
 
     def _get_dept(self):
         emps = self._employees_for_report()

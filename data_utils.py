@@ -8,7 +8,8 @@ from datetime import date
 from config import (DATA_FILE, RIGHT_COLUMNS, CODES,
                     DEFAULT_POSITIONS, DEFAULT_DEPARTMENTS,
                     DEFAULT_ORG, HOLIDAYS,
-                    DEFAULT_ENERGETIC, DEFAULT_DIRECTOR)
+                    DEFAULT_ENERGETIC, DEFAULT_DIRECTOR,
+                    LOCAL_FILE)          # <— добавили LOCAL_FILE
 _LAST_MTIME = 0.0
 
 
@@ -20,6 +21,63 @@ def set_last_mtime(value):
     global _LAST_MTIME
     _LAST_MTIME = value
 
+# ---------------------------------------------------------------------------
+# ЛОКАЛЬНЫЕ (PER-MACHINE) НАСТРОЙКИ
+# ---------------------------------------------------------------------------
+def load_local():
+    if os.path.exists(LOCAL_FILE):
+        try:
+            with open(LOCAL_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"show_in_timesheet": {}}
+
+
+def save_local(local):
+    try:
+        d = os.path.dirname(LOCAL_FILE)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(LOCAL_FILE, 'w', encoding='utf-8') as f:
+            json.dump(local, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("Ошибка сохранения локальных настроек:", e)
+
+
+def set_show_in_timesheet(emp_id, value):
+    """Сохраняет галочку «В таблицу» только для этого компьютера."""
+    if not emp_id:
+        return
+    local = load_local()
+    local.setdefault('show_in_timesheet', {})[emp_id] = bool(value)
+    save_local(local)
+
+
+def apply_local_overrides(data):
+    """Накладывает локальный выбор «В таблицу» поверх общих данных.
+
+    При первом запуске (нет локального файла) — мигрируем текущее
+    состояние из общего файла, чтобы переход был безболезненным.
+    Дальше источником истины становится локальный файл.
+    """
+    first_run = not os.path.exists(LOCAL_FILE)
+    local = load_local()
+    sel = local.setdefault('show_in_timesheet', {})
+
+    if first_run:
+        # Первый запуск на этом компьютере — галочки не выставляем.
+        # Пользователь сам отметит нужных сотрудников; выбор
+        # сохранится локально и не будет синхронизироваться.
+        save_local(local)
+
+    for emp in data.get('employees', []):
+        emp_id = emp.get('id')
+        if not emp_id:
+            emp['show_in_timesheet'] = False
+            continue
+        emp['show_in_timesheet'] = bool(sel.get(emp_id, False))
+    return data
 
 # ---------------------------------------------------------------------------
 def load_data():
@@ -41,24 +99,32 @@ def load_data():
                 data.setdefault('signer_positions', ['Энергетик'])
                 for emp in data['employees']:
                     emp.setdefault('department', '')
-                    emp.setdefault('show_in_timesheet', True)
-                return data
+                    emp.setdefault('show_in_timesheet', False)
+                return apply_local_overrides(data)      # <— ИЗМЕНЕНО
         except Exception:
             pass
-    return {"employees": [], "timesheets": {},
-            "positions": list(DEFAULT_POSITIONS),
-            "night_flags": {},
-            "overtime_flags": {},
-            "holiday_flags": {},
-            "departments": list(DEFAULT_DEPARTMENTS),
-            "organization": DEFAULT_ORG,
-            "energetic_name": DEFAULT_ENERGETIC,       # оставляем для совместимости
-            "department_energetic": {},                # НОВОЕ: {отдел: ФИО энергетика}
-            "signer_positions": ['Энергетик'],
-            "director_name": DEFAULT_DIRECTOR}
+    data = {
+        "employees": [], "timesheets": {},
+        "positions": list(DEFAULT_POSITIONS),
+        "night_flags": {},
+        "overtime_flags": {},
+        "holiday_flags": {},
+        "departments": list(DEFAULT_DEPARTMENTS),
+        "organization": DEFAULT_ORG,
+        "energetic_name": DEFAULT_ENERGETIC,
+        "department_energetic": {},
+        "signer_positions": ['Энергетик'],
+        "director_name": DEFAULT_DIRECTOR,
+    }
+    return apply_local_overrides(data)
 
 def save_data(data):
     global _LAST_MTIME
+    # Поле show_in_timesheet — локальное, не пишем его в общий файл.
+    popped = []
+    for emp in data.get('employees', []):
+        if 'show_in_timesheet' in emp:
+            popped.append((emp, emp.pop('show_in_timesheet')))
     try:
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -68,7 +134,9 @@ def save_data(data):
             pass
     except Exception as e:
         print("Ошибка сохранения:", e)
-
+    finally:
+        for emp, val in popped:
+            emp['show_in_timesheet'] = val
 
 def classify_day(y, m, d):
     if (m, d) in HOLIDAYS:
