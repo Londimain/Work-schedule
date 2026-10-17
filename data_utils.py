@@ -234,7 +234,7 @@ def calc_night_hours(h):
         return 6
     return 0
 
-def analyze_row(values, day_types, night_enabled=False):
+def analyze_row(values, day_types, night_enabled=False, *args, **kwargs):
     res = {key: 0 for _, key, _ in RIGHT_COLUMNS}
     res['часы'] = 0.0
     res['сверхурочные'] = 0.0
@@ -245,25 +245,56 @@ def analyze_row(values, day_types, night_enabled=False):
         if v is None or str(v).strip() == '':
             continue
         s = str(v).strip().upper()
+
+        # --- Коды (В, О, Б, ...) ---
         if s in CODES:
             res[CODES[s]] += 1
-        else:
-            try:
-                h = float(s.replace(',', '.'))
-            except ValueError:
-                continue
-            dt = day_types[i] if i < len(day_types) else 'work'
-            
-            # Если ввели часы в выходной или праздник — суммируем в праздничные
-            if dt in ('weekend', 'holiday'):
-                res['праздничные'] += h
+            continue
 
-            # В любом случае (и в будни, и в выходные) это явка и отработанные часы
-            res['явки'] += 1
-            res['часы'] += h
-            
-            if night_enabled:
-                res['ночные'] += calc_night_hours(h)
+        # --- Часы со сменой: ЧАСЫ//СМЕНА ---
+        shift = None
+        s_hours = s
+        if '//' in s:
+            parts = s.split('//')
+            s_hours = parts[0].strip()
+            try:
+                shift = int(parts[1].strip())
+            except (ValueError, IndexError):
+                shift = None
+
+        try:
+            h = float(s_hours.replace(',', '.'))
+        except ValueError:
+            continue
+
+        dt = day_types[i] if i < len(day_types) else 'work'
+        if dt in ('weekend', 'holiday'):
+            res['праздничные'] += h
+
+        res['явки'] += 1
+        res['часы'] += h
+
+        # --- Ночные ---
+        #   1 — первая смена: ночных нет никогда
+        #   2 — вторая смена: по таблице часов
+        #   нет смены — старая логика calc_night_hours
+        if night_enabled:
+            if shift == 1:
+                night_h = 0
+            elif shift == 2:
+                if   h == 8:  night_h = 1
+                elif h == 9:  night_h = 2
+                elif h == 10: night_h = 3
+                elif h == 11: night_h = 4
+                elif h == 12: night_h = 4
+                elif h == 13: night_h = 5
+                elif h == 14: night_h = 6
+                elif h == 15: night_h = 7
+                else:         night_h = calc_night_hours(h)
+            else:
+                night_h = calc_night_hours(h)
+            res['ночные'] += night_h
+
     return res
 
 def apply_overtime(res, norm_hours):

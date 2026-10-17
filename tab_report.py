@@ -158,7 +158,7 @@ class ReportTab(BoxLayout):
             pos_name = emp.get('position', '')
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
-            res = analyze_row(values, day_types, night_on)
+            res = analyze_row(values, day_types, night_on, m)
             if overtime_on:
                 apply_overtime(res, norm_hours)
             else:
@@ -243,7 +243,7 @@ class ReportTab(BoxLayout):
             pos_name = emp.get('position', '')
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
-            res = analyze_row(values, day_types, night_on)
+            res = analyze_row(values, day_types, night_on, m)
             if overtime_on:
                 apply_overtime(res, norm_hours)
             else:
