@@ -514,6 +514,15 @@ class TimesheetTab(BoxLayout):
                     pass
         return None
 
+    # ---- НОВЫЙ МЕТОД ------------------------------------------------
+    def has_focused_cell(self):
+        """True, если прямо сейчас в фокусе хотя бы одна ячейка табеля.
+
+        Используется главным окном, чтобы не пересобирать таблицу
+        в момент, когда пользователь что-то печатает — иначе
+        сбрасывается курсор и ввод теряется."""
+        return self._get_focused_cell() is not None
+
     def _blur_all_cells(self):
         """Снять фокус со всех ячеек вкладки."""
         for cells in self.day_inputs.values():
@@ -1058,14 +1067,13 @@ class TimesheetTab(BoxLayout):
             holiday_flags = self.app.data.get('holiday_flags', {})
             self._emp_night = {}
             self._emp_overtime = {}
-            self._emp_holiday = {}
             employees = self._employees_for_ts()
             self._employees_order = [emp['id'] for emp in employees]
             for emp in employees:
                 pos_name = emp.get('position', '')
                 self._emp_night[emp['id']] = bool(night_flags.get(pos_name, False))
                 self._emp_overtime[emp['id']] = bool(overtime_flags.get(pos_name, False))
-                self._emp_holiday[emp['id']] = bool(holiday_flags.get(pos_name, False))
+                # self._emp_holiday[emp['id']] = bool(holiday_flags.get(pos_name, False))
 
             W_NUM = dp(40)
             W_DAY = dp(46)
@@ -1370,8 +1378,8 @@ class TimesheetTab(BoxLayout):
         values = [c.input.text for c in cells]
         night_on = self._emp_night.get(emp_id, False)
         overtime_on = self._emp_overtime.get(emp_id, False)
-        holiday_on = self._emp_holiday.get(emp_id, False)
-        res = analyze_row(values, self._day_types, night_on, holiday_on)
+        # holiday_on = self._emp_holiday.get(emp_id, False)
+        res = analyze_row(values, self._day_types, night_on)
         if overtime_on:
             apply_overtime(res, self._get_norm_hours())
         else:

@@ -138,7 +138,6 @@ class ReportTab(BoxLayout):
         employees = self._employees_for_report()
         night_flags = self.app.data.get('night_flags', {})
         overtime_flags = self.app.data.get('overtime_flags', {})
-        holiday_flags = self.app.data.get('holiday_flags', {})
         day_types = [classify_day(y, m, d)
                      for d in range(1, days_in_month + 1)]
         work_days = sum(1 for dt in day_types if dt == 'work')
@@ -159,8 +158,7 @@ class ReportTab(BoxLayout):
             pos_name = emp.get('position', '')
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
-            holiday_on = bool(holiday_flags.get(pos_name, False))
-            res = analyze_row(values, day_types, night_on, holiday_on)
+            res = analyze_row(values, day_types, night_on)
             if overtime_on:
                 apply_overtime(res, norm_hours)
             else:
@@ -186,7 +184,6 @@ class ReportTab(BoxLayout):
         employees = self._employees_for_report()
         night_flags = self.app.data.get('night_flags', {})
         overtime_flags = self.app.data.get('overtime_flags', {})
-        holiday_flags = self.app.data.get('holiday_flags', {})
         org = self.app.data.get('organization', DEFAULT_ORG)
         dept = self._get_dept()
         signer_pos, signer_name = self._get_signer(dept)
@@ -197,6 +194,10 @@ class ReportTab(BoxLayout):
             return
 
         grand, days_in_month, work_days, norm_hours, key = self._calc_grand()
+        
+        spis_count = sum(1 for emp in employees if emp.get('is_contract', True))
+        total_days = sum(grand[k] for k in grand if k not in ('часы', 'сверхурочные', 'ночные', 'праздничные'))
+        avg_count = total_days / days_in_month if days_in_month > 0 else 0
 
         sep = "─" * 90
         lines = [
@@ -207,6 +208,8 @@ class ReportTab(BoxLayout):
             f"  Норма: {work_days} будних × 8 = {fmt_hours(norm_hours)} ч",
             sep,
             f"  Сотрудников: {len(employees)}",
+            f"  Списочная численность: {spis_count}",
+            f"  Среднесписочная численность: {avg_count:.2f}",
             f"  Факт. работы: {grand.get('явки', 0)}    "
             f"Выходных: {grand.get('вых', 0)}    "
             f"Труд. отпуск: {grand.get('отп', 0)}    "
@@ -240,8 +243,7 @@ class ReportTab(BoxLayout):
             pos_name = emp.get('position', '')
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
-            holiday_on = bool(holiday_flags.get(pos_name, False))
-            res = analyze_row(values, day_types, night_on, holiday_on)
+            res = analyze_row(values, day_types, night_on)
             if overtime_on:
                 apply_overtime(res, norm_hours)
             else:
@@ -294,7 +296,6 @@ class ReportTab(BoxLayout):
         employees = self._employees_for_report()
         night_flags = self.app.data.get('night_flags', {})
         overtime_flags = self.app.data.get('overtime_flags', {})
-        holiday_flags = self.app.data.get('holiday_flags', {})
         org = self.app.data.get('organization', DEFAULT_ORG)
         dept = self._get_dept()
         signer_pos, signer_name = self._get_signer(dept)
@@ -412,8 +413,7 @@ class ReportTab(BoxLayout):
             pos_name = emp.get('position', '')
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
-            holiday_on = bool(holiday_flags.get(pos_name, False))
-            res = analyze_row(values, day_types, night_on, holiday_on)
+            res = analyze_row(values, day_types, night_on)
             if overtime_on:
                 apply_overtime(res, norm_hours)
             else:
@@ -486,6 +486,38 @@ class ReportTab(BoxLayout):
             c.fill = total_fill
             start_r += 1
 
+        # --- ДОБАВЛЕНИЕ ЧИСЛЕННОСТИ ---
+        spis_count = sum(1 for emp in employees if emp.get('is_contract', True))
+        total_days = sum(grand[k] for k in grand if k not in ('часы', 'сверхурочные', 'ночные', 'праздничные'))
+        avg_count = total_days / days_in_month if days_in_month > 0 else 0
+
+        # Отступ вниз от таблицы (оставляем 1 пустую строку)
+        row += 2
+
+        # Списочная численность (текст в колонках B-C, значение в D)
+        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=3)
+        c = ws.cell(row=row, column=2, value="Списочная численность:")
+        c.font = Font(size=11, bold=True)
+        c.alignment = Alignment(horizontal='left', vertical='center')
+        c2 = ws.cell(row=row, column=4, value=spis_count)
+        c2.alignment = center
+        c2.font = Font(size=11)
+
+        # Среднесписочная численность (текст в колонках B-C, значение в D)
+        row += 1
+        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=3)
+        c = ws.cell(row=row, column=2, value="Среднесписочная численность:")
+        c.font = Font(size=11, bold=True)
+        c.alignment = Alignment(horizontal='left', vertical='center')
+        
+        val_avg = round(avg_count, 2)
+        if val_avg == int(val_avg):
+            val_avg = int(val_avg)
+        c2 = ws.cell(row=row, column=4, value=val_avg)
+        c2.alignment = center
+        c2.font = Font(size=11)
+        # ------------------------------
+
         max_name_len = max((len(emp.get('name', '') or '')
                             for emp in employees), default=20)
         max_pos_len  = max((len(emp.get('position', '') or '')
@@ -495,7 +527,7 @@ class ReportTab(BoxLayout):
         ws.column_dimensions['B'].width = max(28, max_name_len + 2)
         ws.column_dimensions['C'].width = max(20, max_pos_len + 2)
         for i in range(days_in_month):
-            ws.column_dimensions[get_column_letter(start_days + i)].width = 3.5
+            ws.column_dimensions[get_column_letter(start_days + i)].width = 4.5  # <--- ИЗМЕНЕНО ТУТ
         for i in range(len(RIGHT_COLUMNS)):
             ws.column_dimensions[get_column_letter(end_days + 1 + i)].width = 6
 
@@ -503,7 +535,7 @@ class ReportTab(BoxLayout):
         ws.row_dimensions[2].height = 16
         ws.row_dimensions[row_h2].height = 95
 
-        row += 5          # отступ от таблицы до блока подписей
+        row += 4          # отступ от таблицы до блока подписей
 
         # Слева — Руководитель, справа — Утверждение.
         # LEFT_COL — сразу у левого края таблицы (колонка C).

@@ -354,7 +354,11 @@ class TabelApp(App):
             mt = os.path.getmtime(DATA_FILE)
         except Exception:
             return
-        if mt <= data_utils.get_last_mtime() + 0.001:
+        # Чуть более щедрая граница, чем 0.001 — защищает от
+        # файловых систем с секундной точностью mtime и от
+        # программ-синхронизаторов, которые «трогают» файл сразу
+        # после нашей записи.
+        if mt <= data_utils.get_last_mtime() + 0.5:
             return
         data_utils.set_last_mtime(mt)
         new_data = load_data()
@@ -364,15 +368,25 @@ class TabelApp(App):
             self.emp_tab.refresh()
         except Exception:
             pass
+
+        # НЕ пересобираем вкладку «Табель», пока в какой-нибудь
+        # её ячейке стоит фокус — иначе при наборе слетает курсор
+        # и ввод теряется. Изменения подхватятся при следующей
+        # проверке, когда пользователь перестанет печатать.
         try:
-            self.ts_tab.load_timesheet()
+            editing = self.ts_tab.has_focused_cell()
         except Exception:
-            pass
+            editing = False
+        if not editing:
+            try:
+                self.ts_tab.load_timesheet()
+            except Exception:
+                pass
+
         try:
             self.rep_tab.update_preview()
         except Exception:
             pass
-
 
 if __name__ == '__main__':
     TabelApp().run()

@@ -9,7 +9,8 @@ from config import (DATA_FILE, RIGHT_COLUMNS, CODES,
                     DEFAULT_POSITIONS, DEFAULT_DEPARTMENTS,
                     DEFAULT_ORG, HOLIDAYS,
                     DEFAULT_ENERGETIC, DEFAULT_DIRECTOR,
-                    LOCAL_FILE)          # <— добавили LOCAL_FILE
+                    LOCAL_FILE)
+
 _LAST_MTIME = 0.0
 
 
@@ -20,6 +21,7 @@ def get_last_mtime():
 def set_last_mtime(value):
     global _LAST_MTIME
     _LAST_MTIME = value
+
 
 # ---------------------------------------------------------------------------
 # ЛОКАЛЬНЫЕ (PER-MACHINE) НАСТРОЙКИ
@@ -54,21 +56,28 @@ def set_show_in_timesheet(emp_id, value):
     save_local(local)
 
 
-def apply_local_overrides(data):
-    """Накладывает локальный выбор «В таблицу» поверх общих данных.
+def save_local_order(departments, employees):
+    """Сохраняет локальный порядок отделов и сотрудников.
 
-    При первом запуске (нет локального файла) — мигрируем текущее
-    состояние из общего файла, чтобы переход был безболезненным.
-    Дальше источником истины становится локальный файл.
-    """
+    departments — список имён отделов в нужном порядке;
+    employees   — список dict-ов сотрудников в нужном порядке.
+    Хранятся только идентификаторы, чтобы остальные данные
+    всегда брались из общего файла."""
+    local = load_local()
+    local['departments_order'] = list(departments or [])
+    local['employees_order'] = [
+        e.get('id') for e in (employees or []) if e.get('id')
+    ]
+    save_local(local)
+
+
+def apply_local_overrides(data):
+    """Накладывает локальный выбор «В таблицу» поверх общих данных."""
     first_run = not os.path.exists(LOCAL_FILE)
     local = load_local()
     sel = local.setdefault('show_in_timesheet', {})
 
     if first_run:
-        # Первый запуск на этом компьютере — галочки не выставляем.
-        # Пользователь сам отметит нужных сотрудников; выбор
-        # сохранится локально и не будет синхронизироваться.
         save_local(local)
 
     for emp in data.get('employees', []):
@@ -78,6 +87,63 @@ def apply_local_overrides(data):
             continue
         emp['show_in_timesheet'] = bool(sel.get(emp_id, False))
     return data
+
+
+def apply_local_order(data):
+    """Переупорядочивает отделы и сотрудников согласно local.json.
+
+    Если в local.json ещё нет ключей departments_order / employees_order
+    (первый запуск или апгрейд старой версии), они инициализируются
+    текущим порядком из общего файла — так пользователь увидит
+    привычную раскладку.
+
+    Новые отделы/сотрудники, которых нет в локальном файле, идут в конец."""
+    local = load_local()
+    changed = False
+
+    # --- порядок отделов ---
+    dept_order = local.get('departments_order')
+    if dept_order:
+        current = list(data.get('departments', []))
+        known = [d for d in dept_order if d in current]
+        unknown = [d for d in current if d not in dept_order]
+        data['departments'] = known + unknown
+    else:
+        local['departments_order'] = list(data.get('departments', []))
+        changed = True
+
+    # --- порядок сотрудников (по id) ---
+    emp_order = local.get('employees_order')
+    current_emps = list(data.get('employees', []))
+    if emp_order:
+        by_id = {}
+        for e in current_emps:
+            eid = e.get('id')
+            if eid:
+                by_id[eid] = e
+        new_list = []
+        for eid in emp_order:
+            if eid in by_id:
+                new_list.append(by_id.pop(eid))
+        # Оставшиеся (новые сотрудники или без id) — в конец.
+        for e in current_emps:
+            eid = e.get('id')
+            if eid and eid in by_id:
+                new_list.append(by_id.pop(eid))
+            elif not eid:
+                new_list.append(e)
+        data['employees'] = new_list
+    else:
+        local['employees_order'] = [
+            e.get('id') for e in current_emps if e.get('id')
+        ]
+        changed = True
+
+    if changed:
+        save_local(local)
+
+    return data
+
 
 # ---------------------------------------------------------------------------
 def load_data():
@@ -100,7 +166,10 @@ def load_data():
                 for emp in data['employees']:
                     emp.setdefault('department', '')
                     emp.setdefault('show_in_timesheet', False)
-                return apply_local_overrides(data)      # <— ИЗМЕНЕНО
+                    emp.setdefault('is_contract', True)   # <— ДОБАВИТЬ
+                data = apply_local_overrides(data)
+                data = apply_local_order(data)      # <— ДОБАВЛЕНО
+                return data
         except Exception:
             pass
     data = {
@@ -116,7 +185,10 @@ def load_data():
         "signer_positions": ['Энергетик'],
         "director_name": DEFAULT_DIRECTOR,
     }
-    return apply_local_overrides(data)
+    data = apply_local_overrides(data)
+    data = apply_local_order(data)                  # <— ДОБАВЛЕНО
+    return data
+
 
 def save_data(data):
     global _LAST_MTIME
@@ -137,6 +209,7 @@ def save_data(data):
     finally:
         for emp, val in popped:
             emp['show_in_timesheet'] = val
+
 
 def classify_day(y, m, d):
     if (m, d) in HOLIDAYS:
@@ -161,8 +234,7 @@ def calc_night_hours(h):
         return 6
     return 0
 
-
-def analyze_row(values, day_types, night_enabled=False, holiday_enabled=False):
+def analyze_row(values, day_types, night_enabled=False):
     res = {key: 0 for _, key, _ in RIGHT_COLUMNS}
     res['часы'] = 0.0
     res['сверхурочные'] = 0.0
@@ -181,15 +253,18 @@ def analyze_row(values, day_types, night_enabled=False, holiday_enabled=False):
             except ValueError:
                 continue
             dt = day_types[i] if i < len(day_types) else 'work'
-            if dt in ('weekend', 'holiday') and holiday_enabled:
+            
+            # Если ввели часы в выходной или праздник — суммируем в праздничные
+            if dt in ('weekend', 'holiday'):
                 res['праздничные'] += h
-            else:
-                res['явки'] += 1
-                res['часы'] += h
-                if night_enabled:
-                    res['ночные'] += calc_night_hours(h)
-    return res
 
+            # В любом случае (и в будни, и в выходные) это явка и отработанные часы
+            res['явки'] += 1
+            res['часы'] += h
+            
+            if night_enabled:
+                res['ночные'] += calc_night_hours(h)
+    return res
 
 def apply_overtime(res, norm_hours):
     over = res.get('часы', 0.0) - norm_hours
