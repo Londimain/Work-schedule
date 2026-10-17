@@ -1297,8 +1297,13 @@ class EmployeesTab(BoxLayout):
 
                 def _delete(name):
                     signers_map = self.app.data.get('department_signer', {})
+                    current_depts = self.app.data.get('departments', [])
+                    
+                    # Проверяем, используется ли должность отделами,
+                    # которые РЕАЛЬНО существуют в данный момент
                     used_by = [d for d, ent in signers_map.items()
-                               if ent.get('position') == name]
+                               if ent.get('position') == name and d in current_depts]
+                    
                     if used_by:
                         c = BoxLayout(orientation='vertical',
                                       spacing=10, padding=10)
@@ -1329,9 +1334,21 @@ class EmployeesTab(BoxLayout):
                         sp_list = self.app.data.get('signer_positions', [])
                         if name in sp_list:
                             sp_list.remove(name)
-                            save_data(self.app.data)
-                            rebuild_rows()
-                            rebuild_list()
+                        
+                        # Очищаем "фантомные" привязки этой должности
+                        # у несуществующих (удалённых) отделов
+                        for d in list(signers_map.keys()):
+                            if signers_map[d].get('position') == name:
+                                signers_map.pop(d, None)
+                                
+                        save_data(self.app.data)
+                        rebuild_rows()
+                        rebuild_list()
+
+                    ask_password_and_run(
+                        DELETE_PASSWORD, _do,
+                        description=(f"Удалить должность подписанта:\n"
+                                     f"«{name}»?"))
 
                     ask_password_and_run(
                         DELETE_PASSWORD, _do,
