@@ -267,7 +267,14 @@ def analyze_row(values, day_types, night_enabled=False):
     return res
 
 def apply_overtime(res, norm_hours):
-    over = res.get('часы', 0.0) - norm_hours
+    # Часы, отработанные в выходные и праздники, оплачиваются отдельно 
+    # (как минимум в двойном размере). Поэтому они НЕ должны участвовать 
+    # в расчёте сверхурочных, чтобы не было двойной оплаты.
+    
+    # Получаем "чистые" часы, отработанные только в рабочие дни:
+    work_hours = res.get('часы', 0.0) - res.get('праздничные', 0.0)
+    
+    over = work_hours - norm_hours
     res['сверхурочные'] = over if over > 0 else 0.0
     return res
 
