@@ -1,9 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
+from kivy.tools.packaging.pyinstaller_hooks import (
+    get_deps_minimal, hookspath, runtime_hooks,
+)
 
 datas = [('ico/tabel.ico', 'ico')]
 binaries = []
-hiddenimports = []
+hiddenimports = list(get_deps_minimal()['hiddenimports'])
+
 tmp_ret = collect_all('openpyxl')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
@@ -14,9 +18,9 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=hookspath(),
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=runtime_hooks(),
     excludes=[],
     noarchive=False,
     optimize=0,
@@ -33,7 +37,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,           # ← было True
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

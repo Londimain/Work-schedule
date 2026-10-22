@@ -433,10 +433,12 @@ class ReportTab(BoxLayout):
             ws.cell(row=row, column=2, value=emp.get('name', '')).alignment = left
             ws.cell(row=row, column=3, value=emp.get('position', '')).alignment = left
 
+            # --- ИСПРАВЛЕНО ЗДЕСЬ ---
             for i, v in enumerate(values):
                 col = start_days + i
                 c = ws.cell(row=row, column=col, value=v)
-                c.alignment = center
+                # Вместо center делаем shrink_to_fit (чтобы 12//1 влезало)
+                c.alignment = Alignment(horizontal='center', vertical='center', shrink_to_fit=True)
                 if day_types[i] == 'weekend':
                     c.fill = weekend_fill
                 elif day_types[i] == 'holiday':
@@ -527,7 +529,7 @@ class ReportTab(BoxLayout):
         ws.column_dimensions['B'].width = max(28, max_name_len + 2)
         ws.column_dimensions['C'].width = max(20, max_pos_len + 2)
         for i in range(days_in_month):
-            ws.column_dimensions[get_column_letter(start_days + i)].width = 4.5  # <--- ИЗМЕНЕНО ТУТ
+            ws.column_dimensions[get_column_letter(start_days + i)].width = 4.5
         for i in range(len(RIGHT_COLUMNS)):
             ws.column_dimensions[get_column_letter(end_days + 1 + i)].width = 6
 
@@ -598,6 +600,14 @@ class ReportTab(BoxLayout):
         path = os.path.join(out_dir, f"tabel_{key}.xlsx")
 
         try:
+            # --- ИСПРАВЛЕНО ЗДЕСЬ (Правильные отступы для полей) ---
+            ws.page_margins.left = 0.2
+            ws.page_margins.right = 0.2
+            ws.page_margins.top = 0.3
+            ws.page_margins.bottom = 0.3
+            ws.page_margins.header = 0.1
+            ws.page_margins.footer = 0.1
+            
             wb.save(path)
         except Exception as e:
             print("Ошибка сохранения Excel:", e)
