@@ -246,12 +246,18 @@ def analyze_row(values, day_types, night_enabled=False, *args, **kwargs):
             continue
         s = str(v).strip().upper()
 
-        # --- Коды (В, О, Б, ...) ---
+        # --- Коды: В, О, Б, … , ДМ (прочие неявки) ---
         if s in CODES:
             res[CODES[s]] += 1
             continue
 
-        # --- Часы со сменой: ЧАСЫ//СМЕНА ---
+        # --- Пометка «д» (8д, 7,5д, 8//2д) — снимаем её до разбора.
+        #     Если «д» стоит — ночные НЕ начисляются. ---
+        has_day_suffix = s.endswith('Д') and len(s) > 1
+        if has_day_suffix:
+            s = s[:-1].strip()
+
+        # --- Часы со сменой (ЧАСЫ//СМЕНА) ---
         shift = None
         s_hours = s
         if '//' in s:
@@ -275,10 +281,9 @@ def analyze_row(values, day_types, night_enabled=False, *args, **kwargs):
         res['часы'] += h
 
         # --- Ночные ---
-        #   1 — первая смена: ночных нет никогда
-        #   2 — вторая смена: по таблице часов
-        #   нет смены — старая логика calc_night_hours
-        if night_enabled:
+        # Если стоит пометка «д» — ночные НЕ начисляются,
+        # даже если по должности включён признак «Ночные».
+        if night_enabled and not has_day_suffix:
             if shift == 1:
                 night_h = 0
             elif shift == 2:
@@ -286,10 +291,10 @@ def analyze_row(values, day_types, night_enabled=False, *args, **kwargs):
                 elif h == 9:  night_h = 2
                 elif h == 10: night_h = 3
                 elif h == 11: night_h = 4
-                elif h == 12: night_h = 4
-                elif h == 13: night_h = 5
-                elif h == 14: night_h = 6
-                elif h == 15: night_h = 7
+                elif h == 12: night_h = 8
+                elif h == 13: night_h = 8
+                elif h == 14: night_h = 8
+                elif h == 15: night_h = 8
                 else:         night_h = calc_night_hours(h)
             else:
                 night_h = calc_night_hours(h)

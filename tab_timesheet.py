@@ -23,10 +23,11 @@ from config import (FONT_NAME, LABEL_LIGHT, MONTHS, YEARS,
                     HEADER_BG, HEADER_FG)
 from data_utils import (save_data, classify_day, analyze_row,
                         apply_overtime, fmt_hours)
-from ui_helpers import (add_bottom_border, add_left_border, add_right_border,
+from ui_helpers import (add_bottom_border, add_top_border,
+                        add_left_border, add_right_border,
                         vsep, sync_vertical, measure_text_width,
                         HorizontalScrollView, SmartScrollView,
-                        NoOverscrollEffect)   # <— новое
+                        NoOverscrollEffect)
 from ui_widgets import (VerticalLabel, DayCell, ResultCell, DayHeader,
                         NavTextInput)
 
@@ -123,6 +124,77 @@ class TimesheetTab(BoxLayout):
 
         self.main_container = BoxLayout(orientation='vertical', spacing=0)
         self.add_widget(self.main_container)
+
+        # ---- Подсказка-таблица внизу вкладки «Табель» ----
+        HINT_BG   = (0.11, 0.12, 0.15, 1)   # как TOPBAR_BG в main.py
+        HINT_FG   = (0.88, 0.90, 0.94, 1)   # расшифровка
+        HINT_CODE = (1.00, 0.85, 0.35, 1)   # жёлтый акцент на код
+        HINT_DASH = (0.40, 0.42, 0.48, 1)   # тире-разделитель
+
+        hint_items = [
+            ('В',    '  выходной'),
+            ('О',    '  трудовой отпуск'),
+            ('Б',    '  больничный'),
+            ('А',    '  за свой счёт'),
+            ('Р',    '  отпуск по родам'),
+            ('Н',    '  прочие неявки'),
+            ('ДМ',   '  день матери'),
+            ('П',    '  прогул'),
+            ('Т',    '  текущий простой'),
+            ('Ц',    '  целосменный простой'),
+            ('У',    '  опоздание'),
+            ('8д',   '  часы без ночных'),
+            ('8//N', '  часы // смена'),
+            ('Tab',  '  стрелки — по ячейкам'),
+        ]
+
+        hint_wrap = BoxLayout(orientation='vertical',
+                              size_hint_y=None,
+                              height=dp(64),
+                              padding=(dp(6), dp(4), dp(6), dp(4)))
+        with hint_wrap.canvas.before:
+            Color(*HINT_BG)
+            _hw = Rectangle(pos=hint_wrap.pos, size=hint_wrap.size)
+        hint_wrap.bind(pos=lambda i, v, r=_hw: setattr(r, 'pos', v),
+                       size=lambda i, v, r=_hw: setattr(r, 'size', v))
+
+        hint_grid = GridLayout(cols=7, size_hint_y=None, height=dp(56),
+                               spacing=dp(2))
+        for code, desc in hint_items:
+            cell = BoxLayout(orientation='horizontal', spacing=dp(4),
+                             padding=(dp(6), 0, dp(4), 0))
+
+            code_lbl = Label(
+                text=code, bold=True, color=HINT_CODE,
+                font_name=FONT_NAME, font_size=dp(13),
+                size_hint_x=None, width=dp(42),
+                halign='center', valign='middle',
+            )
+            code_lbl.bind(size=lambda i, v: setattr(i, 'text_size', v))
+            cell.add_widget(code_lbl)
+
+            dash_lbl = Label(
+                text='—', color=HINT_DASH,
+                font_name=FONT_NAME, font_size=dp(12),
+                size_hint_x=None, width=dp(10),
+                halign='center', valign='middle',
+            )
+            cell.add_widget(dash_lbl)
+
+            desc_lbl = Label(
+                text=desc, color=HINT_FG,
+                font_name=FONT_NAME, font_size=dp(12),
+                halign='left', valign='middle',
+                shorten=True, shorten_from='right',
+            )
+            desc_lbl.bind(size=lambda i, v: setattr(i, 'text_size', v))
+            cell.add_widget(desc_lbl)
+
+            hint_grid.add_widget(cell)
+
+        hint_wrap.add_widget(hint_grid)
+        add_top_border(hint_wrap, color=(0, 0, 0, 1), thickness=1)
+        self.add_widget(hint_wrap)
 
         self.month_spinner.bind(text=self._on_period_change)
         self.year_spinner.bind(text=self._on_period_change)
