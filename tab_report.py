@@ -7,7 +7,7 @@ import os
 import webbrowser
 from calendar import monthrange
 from datetime import datetime, date
-from ui_helpers import NoOverscrollEffect   # <— новое
+from ui_helpers import NoOverscrollEffect
 
 from kivy.metrics import dp
 from kivy.uix.anchorlayout import AnchorLayout
@@ -46,6 +46,15 @@ class ReportTab(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
         self.app = app
+        
+        # --- НОВЫЙ КОД ---
+        with self.canvas.before:
+            Color(*config.TABLE_BG)
+            self._bg = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=lambda i, v: setattr(self._bg, 'pos', v),
+                  size=lambda i, v: setattr(self._bg, 'size', v))
+        # -----------------
+
         self._build()
         Clock.schedule_once(lambda *a: self.update_preview(), 0.3)
 
@@ -70,7 +79,7 @@ class ReportTab(BoxLayout):
                                     background_color=SPINNER_BG, color=SPINNER_FG)
         top.add_widget(self.year_spinner)
 
-        top.add_widget(Widget())  # распорка
+        top.add_widget(Widget())
 
         excel_btn = Button(text="Сохранить в Excel",
                            size_hint_x=None, width=dp(200),
@@ -97,28 +106,24 @@ class ReportTab(BoxLayout):
         self.preview = Label(text="", size_hint_y=None, halign='left',
                               valign='top', padding=(20, 20),
                               font_name=FONT_NAME,
-                              font_size=dp(13), color=LABEL_LIGHT)
+                              font_size=dp(13), color=config.TABLE_FG) # <--- ИЗМЕНЕНО
         self.preview.bind(width=lambda *a: setattr(
             self.preview, 'text_size', (self.preview.width - 40, None)))
         self.preview.bind(texture_size=self.preview.setter('size'))
         scroll.add_widget(self.preview)
         self.add_widget(scroll)
 
-    # ---------------- энергетик -------------------------------
     def _get_signer(self, dept):
-        """Возвращает (должность, ФИО) подписанта для отдела."""
         signers = self.app.data.get('department_signer', {}) or {}
         entry = signers.get(dept)
         if entry and entry.get('name'):
             return (entry.get('position') or 'Энергетик',
                     entry.get('name'))
-        # legacy-fallback (старые данные)
         em = self.app.data.get('department_energetic', {}) or {}
         name = em.get(dept) or self.app.data.get('energetic_name',
                                                  DEFAULT_ENERGETIC)
         return ('Энергетик', name)
 
-    # ---------------- вспомогательные ------------------------------------
     def _employees_for_report(self):
         return [emp for emp in self.app.data['employees']
                 if emp.get('show_in_timesheet', False)]
@@ -138,6 +143,7 @@ class ReportTab(BoxLayout):
         employees = self._employees_for_report()
         night_flags = self.app.data.get('night_flags', {})
         overtime_flags = self.app.data.get('overtime_flags', {})
+        holidays_only_flags = self.app.data.get('holidays_only_flags', {})
         day_types = [classify_day(y, m, d)
                      for d in range(1, days_in_month + 1)]
         work_days = sum(1 for dt in day_types if dt == 'work')
@@ -158,7 +164,8 @@ class ReportTab(BoxLayout):
             pos_name = emp.get('position', '')
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
-            res = analyze_row(values, day_types, night_on, m)
+            holidays_only = bool(holidays_only_flags.get(pos_name, False))
+            res = analyze_row(values, day_types, night_on, holidays_only)
             if overtime_on:
                 apply_overtime(res, norm_hours)
             else:
@@ -174,7 +181,6 @@ class ReportTab(BoxLayout):
                     grand[k] += res.get(k, 0)
         return grand, days_in_month, work_days, norm_hours, key
 
-    # ---------------- предпросмотр ---------------------------------------
     def update_preview(self):
         y = int(self.year_spinner.text)
         m = MONTHS.index(self.month_spinner.text) + 1
@@ -184,6 +190,7 @@ class ReportTab(BoxLayout):
         employees = self._employees_for_report()
         night_flags = self.app.data.get('night_flags', {})
         overtime_flags = self.app.data.get('overtime_flags', {})
+        holidays_only_flags = self.app.data.get('holidays_only_flags', {})
         org = self.app.data.get('organization', DEFAULT_ORG)
         dept = self._get_dept()
         signer_pos, signer_name = self._get_signer(dept)
@@ -243,7 +250,8 @@ class ReportTab(BoxLayout):
             pos_name = emp.get('position', '')
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
-            res = analyze_row(values, day_types, night_on, m)
+            holidays_only = bool(holidays_only_flags.get(pos_name, False))
+            res = analyze_row(values, day_types, night_on, holidays_only)
             if overtime_on:
                 apply_overtime(res, norm_hours)
             else:
@@ -261,8 +269,8 @@ class ReportTab(BoxLayout):
                   "  Нажмите «Сохранить в Excel», чтобы получить файл .xlsx"]
         self.preview.text = "\n".join(lines)
 
-    # ---------------- экспорт в Excel ------------------------------------
     def save_excel(self, *a):
+        holidays_only_flags = self.app.data.get('holidays_only_flags', {})
         if not HAS_OPENPYXL:
             from kivy.uix.scrollview import ScrollView as _SV
             msg = ("Не удалось загрузить openpyxl в собранной программе.\n\n"
@@ -283,7 +291,8 @@ class ReportTab(BoxLayout):
             inner.add_widget(ok_btn)
             popup = Popup(title="Нужен openpyxl", content=inner,
                           size_hint=(0.85, 0.55),
-                          title_color=LABEL_LIGHT, title_font=FONT_NAME)
+                          title_color=LABEL_LIGHT, title_font=FONT_NAME,
+                          auto_dismiss=False)  # Запрет закрытия по клику
             ok_btn.bind(on_press=popup.dismiss)
             popup.open()
             return
@@ -413,7 +422,8 @@ class ReportTab(BoxLayout):
             pos_name = emp.get('position', '')
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
-            res = analyze_row(values, day_types, night_on)
+            holidays_only = bool(holidays_only_flags.get(pos_name, False))
+            res = analyze_row(values, day_types, night_on, holidays_only)
             if overtime_on:
                 apply_overtime(res, norm_hours)
             else:
@@ -431,13 +441,14 @@ class ReportTab(BoxLayout):
 
             ws.cell(row=row, column=1, value=idx + 1).alignment = center
             ws.cell(row=row, column=2, value=emp.get('name', '')).alignment = left
-            ws.cell(row=row, column=3, value=emp.get('position', '')).alignment = left
+            
+            # Включаем перенос текста для должности
+            c_pos = ws.cell(row=row, column=3, value=emp.get('position', ''))
+            c_pos.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-            # --- ИСПРАВЛЕНО ЗДЕСЬ ---
             for i, v in enumerate(values):
                 col = start_days + i
                 c = ws.cell(row=row, column=col, value=v)
-                # Вместо center делаем shrink_to_fit (чтобы 12//1 влезало)
                 c.alignment = Alignment(horizontal='center', vertical='center', shrink_to_fit=True)
                 if day_types[i] == 'weekend':
                     c.fill = weekend_fill
@@ -488,15 +499,12 @@ class ReportTab(BoxLayout):
             c.fill = total_fill
             start_r += 1
 
-        # --- ДОБАВЛЕНИЕ ЧИСЛЕННОСТИ ---
         spis_count = sum(1 for emp in employees if emp.get('is_contract', True))
         total_days = sum(grand[k] for k in grand if k not in ('часы', 'сверхурочные', 'ночные', 'праздничные'))
         avg_count = total_days / days_in_month if days_in_month > 0 else 0
 
-        # Отступ вниз от таблицы (оставляем 1 пустую строку)
         row += 2
 
-        # Списочная численность (текст в колонках B-C, значение в D)
         ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=3)
         c = ws.cell(row=row, column=2, value="Списочная численность:")
         c.font = Font(size=11, bold=True)
@@ -505,7 +513,6 @@ class ReportTab(BoxLayout):
         c2.alignment = center
         c2.font = Font(size=11)
 
-        # Среднесписочная численность (текст в колонках B-C, значение в D)
         row += 1
         ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=3)
         c = ws.cell(row=row, column=2, value="Среднесписочная численность:")
@@ -518,7 +525,6 @@ class ReportTab(BoxLayout):
         c2 = ws.cell(row=row, column=4, value=val_avg)
         c2.alignment = center
         c2.font = Font(size=11)
-        # ------------------------------
 
         max_name_len = max((len(emp.get('name', '') or '')
                             for emp in employees), default=20)
@@ -527,7 +533,7 @@ class ReportTab(BoxLayout):
 
         ws.column_dimensions['A'].width = 5
         ws.column_dimensions['B'].width = max(28, max_name_len + 2)
-        ws.column_dimensions['C'].width = max(20, max_pos_len + 2)
+        ws.column_dimensions['C'].width = max(20, min(30, max_pos_len + 2)) # Ограничиваем ширину 30
         for i in range(days_in_month):
             ws.column_dimensions[get_column_letter(start_days + i)].width = 4.5
         for i in range(len(RIGHT_COLUMNS)):
@@ -535,17 +541,17 @@ class ReportTab(BoxLayout):
 
         ws.row_dimensions[1].height = 22
         ws.row_dimensions[2].height = 16
-        ws.row_dimensions[row_h2].height = 95
+        ws.row_dimensions[row_h1].height = 20      # Высота для строки с группами ("Дни явок" и т.д.)
+        ws.row_dimensions[row_h2].height = 110     # Увеличенная высота для вертикальных заголовков
 
-        row += 4          # отступ от таблицы до блока подписей
+        row += 4
 
         # Слева — Руководитель, справа — Утверждение.
         # LEFT_COL — сразу у левого края таблицы (колонка C).
-        # RIGHT_COL — ближе к правому краю (последние ~10 колонок свободны).
         LEFT_COL  = 3
-        RIGHT_COL = max(LEFT_COL + 22, total_cols - 11)
+        # Сдвигаем правую подпись левее, чтобы она не прилипала к краю
+        RIGHT_COL = max(LEFT_COL + 22, total_cols - 18)
 
-        # --- Строка 1: метки ---
         c = ws.cell(row=row, column=LEFT_COL, value="Руководитель:")
         c.font = Font(size=11)
         c.alignment = Alignment(horizontal='left', vertical='center')
@@ -554,7 +560,6 @@ class ReportTab(BoxLayout):
         c.font = Font(size=11)
         c.alignment = Alignment(horizontal='left', vertical='center')
 
-        # --- Строка 2: сами подписи (через 2 строки ниже) ---
         sig_row = row + 2
 
         c = ws.cell(row=sig_row, column=LEFT_COL,
@@ -574,7 +579,6 @@ class ReportTab(BoxLayout):
         ws.page_setup.fitToHeight = 0
         ws.sheet_properties.pageSetUpPr.fitToPage = True
 
-        # Область печати — до нижней строки подписей + 2 строки запаса
         last_print_row = sig_row + 2
         try:
             ws.print_area = (f"A1:"
@@ -600,7 +604,6 @@ class ReportTab(BoxLayout):
         path = os.path.join(out_dir, f"tabel_{key}.xlsx")
 
         try:
-            # --- ИСПРАВЛЕНО ЗДЕСЬ (Правильные отступы для полей) ---
             ws.page_margins.left = 0.2
             ws.page_margins.right = 0.2
             ws.page_margins.top = 0.3

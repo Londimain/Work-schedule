@@ -55,6 +55,11 @@ def set_show_in_timesheet(emp_id, value):
     local.setdefault('show_in_timesheet', {})[emp_id] = bool(value)
     save_local(local)
 
+def set_theme(theme_name):
+    """Сохраняет выбранную тему оформления для этого компьютера."""
+    local = load_local()
+    local['theme'] = theme_name
+    save_local(local)
 
 def save_local_order(departments, employees):
     """Сохраняет локальный порядок отделов и сотрудников.
@@ -156,7 +161,7 @@ def load_data():
                 data.setdefault('positions', list(DEFAULT_POSITIONS))
                 data.setdefault('night_flags', {})
                 data.setdefault('overtime_flags', {})
-                data.setdefault('holiday_flags', {})
+                data.setdefault('holidays_only_flags', {})
                 data.setdefault('departments', list(DEFAULT_DEPARTMENTS))
                 data.setdefault('organization', DEFAULT_ORG)
                 data.setdefault('energetic_name', DEFAULT_ENERGETIC)
@@ -177,7 +182,7 @@ def load_data():
         "positions": list(DEFAULT_POSITIONS),
         "night_flags": {},
         "overtime_flags": {},
-        "holiday_flags": {},
+        "holidays_only_flags": {},
         "departments": list(DEFAULT_DEPARTMENTS),
         "organization": DEFAULT_ORG,
         "energetic_name": DEFAULT_ENERGETIC,
@@ -234,7 +239,8 @@ def calc_night_hours(h):
         return 6
     return 0
 
-def analyze_row(values, day_types, night_enabled=False, *args, **kwargs):
+def analyze_row(values, day_types, night_enabled=False,
+                holidays_only=False, *args, **kwargs):
     res = {key: 0 for _, key, _ in RIGHT_COLUMNS}
     res['часы'] = 0.0
     res['сверхурочные'] = 0.0
@@ -246,27 +252,29 @@ def analyze_row(values, day_types, night_enabled=False, *args, **kwargs):
             continue
         s = str(v).strip().upper()
 
-        # --- Коды: В, О, Б, … , ДМ (прочие неявки) ---
         if s in CODES:
             res[CODES[s]] += 1
             continue
 
-        # --- Пометка «д» (8д, 7,5д, 8//2д) — снимаем её до разбора.
-        #     Если «д» стоит — ночные НЕ начисляются. ---
         has_day_suffix = s.endswith('Д') and len(s) > 1
         if has_day_suffix:
             s = s[:-1].strip()
 
-        # --- Часы со сменой (ЧАСЫ//СМЕНА) ---
         shift = None
         s_hours = s
+        sep = None
         if '//' in s:
-            parts = s.split('//')
+            sep = '//'
+        elif '/' in s:
+            sep = '/'
+        if sep:
+            parts = s.split(sep, 1)
             s_hours = parts[0].strip()
-            try:
-                shift = int(parts[1].strip())
-            except (ValueError, IndexError):
-                shift = None
+            if len(parts) > 1:
+                try:
+                    shift = int(parts[1].strip())
+                except (ValueError, IndexError):
+                    shift = None
 
         try:
             h = float(s_hours.replace(',', '.'))
@@ -274,31 +282,36 @@ def analyze_row(values, day_types, night_enabled=False, *args, **kwargs):
             continue
 
         dt = day_types[i] if i < len(day_types) else 'work'
-        if dt in ('weekend', 'holiday'):
+        # «Без праздничных»: выходные не считаются праздничными,
+        # только реальные праздники.
+        if dt == 'holiday':
+            res['праздничные'] += h
+        elif dt == 'weekend' and not holidays_only:
             res['праздничные'] += h
 
         res['явки'] += 1
         res['часы'] += h
 
-        # --- Ночные ---
-        # Если стоит пометка «д» — ночные НЕ начисляются,
-        # даже если по должности включён признак «Ночные».
-        if night_enabled and not has_day_suffix:
-            if shift == 1:
-                night_h = 0
-            elif shift == 2:
-                if   h == 8:  night_h = 1
-                elif h == 9:  night_h = 2
-                elif h == 10: night_h = 3
-                elif h == 11: night_h = 4
-                elif h == 12: night_h = 8
-                elif h == 13: night_h = 8
-                elif h == 14: night_h = 8
-                elif h == 15: night_h = 8
-                else:         night_h = calc_night_hours(h)
+        if not has_day_suffix:
+            if shift is not None:
+                if shift == 1:
+                    night_h = 0
+                elif shift == 2:
+                    if   h == 8:  night_h = 1
+                    elif h == 9:  night_h = 2
+                    elif h == 10: night_h = 3
+                    elif h == 11: night_h = 4
+                    elif h == 12: night_h = 8
+                    elif h == 13: night_h = 8
+                    elif h == 14: night_h = 8
+                    elif h == 15: night_h = 8
+                    else:         night_h = calc_night_hours(h)
+                else:
+                    night_h = calc_night_hours(h)
+                res['ночные'] += night_h
             else:
-                night_h = calc_night_hours(h)
-            res['ночные'] += night_h
+                if night_enabled and h != 8.0:
+                    res['ночные'] += calc_night_hours(h)
 
     return res
 

@@ -23,6 +23,18 @@ def measure_text_width(text, font_size=14):
     except Exception:
         return len(str(text)) * 8
 
+def measure_text_height(text, width, font_size=14):
+    """Вычисляет высоту текста с учетом переноса строк."""
+    if not text:
+        return 0
+    try:
+        core = CoreLabel(text=str(text), font_size=dp(font_size),
+                         font_name=FONT_NAME, text_size=(width, None))
+        core.refresh()
+        return core.texture.size[1]
+    except Exception:
+        return dp(20)
+
 
 def add_bottom_border(widget, color=DIVIDER_COLOR, thickness=1):
     with widget.canvas.after:
@@ -93,8 +105,6 @@ def sync_vertical(scrolls):
                 for other in scrolls:
                     if other is src:
                         continue
-                    # Порог 0.001 — игнорируем микро-расхождения,
-                    # иначе панели «дрожат», отражая друг друга.
                     if abs(other.scroll_y - value) > 0.001:
                         other.scroll_y = value
             finally:
@@ -126,18 +136,13 @@ class SmartScrollView(ScrollView):
     def on_touch_down(self, touch):
         if not self.collide_point(*touch.pos):
             return False
-        # Колёсико мыши — всегда сами (прокрутка панели)
         if 'button' in touch.profile and touch.button in ('scrollup', 'scrolldown'):
             return super().on_touch_down(touch)
-        # Если касание внутри TextInput — не поглощаем,
-        # Kivy сам доставит событие до TextInput
         if self._find_textinput_under(touch) is not None:
             return False
         return super().on_touch_down(touch)
 
     def on_touch_move(self, touch):
-        # Если касание над TextInput — не даём ScrollView прокручивать,
-        # пропускаем событие дальше, чтобы TextInput выделил текст.
         if self._find_textinput_under(touch) is not None:
             return False
         return super().on_touch_move(touch)
@@ -158,8 +163,7 @@ from kivy.properties import NumericProperty
 
 
 class NoOverscrollEffect(ScrollEffect):
-    """ScrollEffect без упругого отскока.
-    Убирает «дёрганье» содержимого после окончания прокрутки."""
+    """ScrollEffect без упругого отскока."""
     overscroll = NumericProperty(0)
     
 def ask_password_and_run(password, on_success,
@@ -223,7 +227,8 @@ def ask_password_and_run(password, on_success,
 
     popup = Popup(title=title, content=content,
                   size_hint=(0.48, None), height=dp(280),
-                  title_color=LABEL_LIGHT, title_font=FONT_NAME)
+                  title_color=LABEL_LIGHT, title_font=FONT_NAME,
+                  auto_dismiss=False) 
 
     def do_ok(*a):
         if pw.text == password:

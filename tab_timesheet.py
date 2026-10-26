@@ -17,6 +17,7 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
 from kivy.uix.widget import Widget
 from kivy.graphics import Color, Rectangle
+from kivy.uix.stencilview import StencilView
 
 from config import (FONT_NAME, LABEL_LIGHT, MONTHS, YEARS,
                     SPINNER_BG, SPINNER_FG, RIGHT_COLUMNS,
@@ -26,7 +27,7 @@ from data_utils import (save_data, classify_day, analyze_row,
 from ui_helpers import (add_bottom_border, add_top_border,
                         add_left_border, add_right_border,
                         vsep, sync_vertical, measure_text_width,
-                        HorizontalScrollView, SmartScrollView,
+                        measure_text_height, HorizontalScrollView, SmartScrollView,
                         NoOverscrollEffect)
 from ui_widgets import (VerticalLabel, DayCell, ResultCell, DayHeader,
                         NavTextInput)
@@ -37,12 +38,10 @@ def _stretch_grid(grid, sv):
     def _sync(*_):
         try:
             h = max(grid.minimum_height, sv.height)
-            if abs(grid.height - h) > 0.5:      # фильтр — не трогаем,
-                grid.height = h                 # если высота та же
+            if abs(grid.height - h) > 0.5:
+                grid.height = h
         except Exception:
             pass
-    # Слушаем только sv.height. minimum_height НЕ биндим —
-    # иначе цикл «высота → пересчёт → высота → дрожь».
     sv.bind(height=_sync)
     Clock.schedule_once(_sync, 0)
     Clock.schedule_once(_sync, 0.1)
@@ -51,8 +50,16 @@ class TimesheetTab(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
         self.app = app
+        
+        with self.canvas.before:
+            Color(*config.TABLE_BG)
+            self._bg = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=lambda i, v: setattr(self._bg, 'pos', v),
+                  size=lambda i, v: setattr(self._bg, 'size', v))
+
         self.day_inputs = {}
         self.total_labels = {}
+        self._emp_holidays_only = {}
         self._last_key = None
         self._loading = False
         self._save_event = None
@@ -68,7 +75,6 @@ class TimesheetTab(BoxLayout):
         self._sel_anchor = None
         self._sel_current = None
 
-        # --- трекинг shift ---
         self._shift_held = False
         from kivy.core.window import Window
         Window.bind(on_keyboard=self._on_window_keyboard,
@@ -125,11 +131,10 @@ class TimesheetTab(BoxLayout):
         self.main_container = BoxLayout(orientation='vertical', spacing=0)
         self.add_widget(self.main_container)
 
-        # ---- Подсказка-таблица внизу вкладки «Табель» ----
-        HINT_BG   = (0.11, 0.12, 0.15, 1)   # как TOPBAR_BG в main.py
-        HINT_FG   = (0.88, 0.90, 0.94, 1)   # расшифровка
-        HINT_CODE = (1.00, 0.85, 0.35, 1)   # жёлтый акцент на код
-        HINT_DASH = (0.40, 0.42, 0.48, 1)   # тире-разделитель
+        HINT_BG   = config.TOPBAR_BG
+        HINT_FG   = (0.88, 0.90, 0.94, 1)
+        HINT_CODE = (1.00, 0.85, 0.35, 1)
+        HINT_DASH = (0.40, 0.42, 0.48, 1)
 
         hint_items = [
             ('В',    '  выходной'),
@@ -143,8 +148,8 @@ class TimesheetTab(BoxLayout):
             ('Т',    '  текущий простой'),
             ('Ц',    '  целосменный простой'),
             ('У',    '  опоздание'),
-            ('8д',   '  часы без ночных'),
-            ('8//N', '  часы // смена'),
+            ('8д',   '  часы без ночных (8 тоже)'),
+            ('8//N', '  часы // смена (и /)'),
             ('Tab',  '  стрелки — по ячейкам'),
         ]
 
@@ -199,9 +204,20 @@ class TimesheetTab(BoxLayout):
         self.month_spinner.bind(text=self._on_period_change)
         self.year_spinner.bind(text=self._on_period_change)
 
-        self.load_timesheet()
+        # self.load_timesheet()
+        
+    def cleanup(self):
+        """Отвязывает глобальные события Window перед удалением вкладки."""
+        from kivy.core.window import Window
+        try:
+            Window.unbind(on_keyboard=self._on_window_keyboard,
+                          on_key_down=self._on_win_key_down,
+                          on_key_up=self._on_win_key_up)
+        except Exception:
+            pass
+        if hasattr(self, '_save_event') and self._save_event:
+            self._save_event.cancel()
 
-    # ---------------- служебные ------------------------------------------
     def _get_key(self):
         m = MONTHS.index(self.month_spinner.text) + 1
         y = int(self.year_spinner.text)
@@ -222,14 +238,13 @@ class TimesheetTab(BoxLayout):
             self._save_for_key(self._last_key)
         self.load_timesheet()
 
-    # ---------------- трекинг Shift --------------------------------------
     def _on_win_key_down(self, window, key, scancode, codepoint, modifiers):
         if 'shift' in (modifiers or []):
             self._shift_held = True
             NavTextInput.shift_state['held'] = True
 
     def _on_win_key_up(self, window, key, scancode):
-        if key in (303, 304):    # левый / правый Shift
+        if key in (303, 304):
             self._shift_held = False
             NavTextInput.shift_state['held'] = False
 
@@ -260,7 +275,6 @@ class TimesheetTab(BoxLayout):
         return [emp for emp in self.app.data['employees']
                 if emp.get('show_in_timesheet', False)]
 
-    # ---------------- навигация ------------------------------------------
     def _make_day_nav_callback(self, emp_id, day_idx):
         def cb(key, modifiers):
             return self._handle_day_nav(emp_id, day_idx, key, modifiers)
@@ -271,13 +285,10 @@ class TimesheetTab(BoxLayout):
             return self._handle_result_nav(emp_id, col_idx, key, modifiers)
         return cb
 
-    # ---------------- Ctrl+C / Ctrl+V ------------------------------------
     def _on_extra_key(self, key, modifiers):
-        """Перехват клавиш, приходящий раньше стандартной обработки TextInput."""
         mods = modifiers or []
         ctrl = 'ctrl' in mods
 
-        # ---- Del (key = 127) ----
         if key == 127:
             cell = self._get_focused_cell()
             if cell is not None:
@@ -299,8 +310,7 @@ class TimesheetTab(BoxLayout):
         if not ctrl:
             return False
 
-        # ---- Ctrl+C ----
-        if key == 99:   # c
+        if key == 99:
             if (self._sel_anchor and self._sel_current
                     and self._sel_anchor != self._sel_current):
                 return self._save_selection_to_clipboard()
@@ -315,8 +325,7 @@ class TimesheetTab(BoxLayout):
                     return False
             return False
 
-        # ---- Ctrl+V ----
-        if key == 118:  # v
+        if key == 118:
             try:
                 from kivy.core.clipboard import Clipboard
                 txt = Clipboard.paste() or ''
@@ -349,29 +358,16 @@ class TimesheetTab(BoxLayout):
         return False
 
     def _on_window_keyboard(self, window, key, scancode, codepoint, modifiers):
-        """Самый ранний перехват клавиш в Kivy.
-
-        Возврат True останавливает дальнейшую обработку.
-
-        Здесь ловим Ctrl+C / Ctrl+V и Del. Это единственное место,
-        которое срабатывает, даже если ни одна ячейка не в фокусе —
-        например после Shift-выделения (там мы специально снимаем
-        фокус, чтобы не оставалось встроенного текстового выделения).
-        """
         mods = modifiers or []
         ctrl = 'ctrl' in mods
 
-        # ---- Ctrl+C: копируем выделение (диапазон или одну ячейку) ----
-        if ctrl and key == 99:      # 'c'
+        if ctrl and key == 99:
             if self._sel_anchor and self._sel_current:
                 if self._save_selection_to_clipboard():
                     return True
-            # Если выделения ячеек нет — пусть обрабатывает TextInput
-            # (там есть путь «скопировать содержимое активной ячейки»).
             return False
 
-        # ---- Ctrl+V: вставляем от якоря выделения ----
-        if ctrl and key == 118:     # 'v'
+        if ctrl and key == 118:
             if self._sel_anchor and self._sel_current:
                 try:
                     from kivy.core.clipboard import Clipboard
@@ -383,20 +379,15 @@ class TimesheetTab(BoxLayout):
                 lines = txt.replace('\r\n', '\n').split('\n')
                 while len(lines) > 1 and lines[-1] == '':
                     lines.pop()
-                # _paste_tsv_from_text работает и для одиночного
-                # значения (без таба), и для матрицы TSV —
-                # в обоих случаях вставка идёт от _sel_anchor.
                 if self._paste_tsv_from_text(lines):
                     return True
             return False
 
-        # ---- Del (key = 127) ----
         if key != 127:
             return False
 
         cell = self._get_focused_cell()
 
-        # Если внутри одной ячейки выделен фрагмент — не мешаем TextInput
         if cell is not None:
             try:
                 if cell.input.selection_text:
@@ -404,14 +395,12 @@ class TimesheetTab(BoxLayout):
             except Exception:
                 pass
 
-        # Если выделено 2+ ячеек — очищаем весь диапазон
         if (self._sel_anchor and self._sel_current
                 and self._sel_anchor != self._sel_current):
             if self._clear_selection_cells():
                 return True
             return False
 
-        # Иначе — очищаем содержимое всей активной ячейки
         if cell is not None:
             cell.input.text = ''
             return True
@@ -457,8 +446,6 @@ class TimesheetTab(BoxLayout):
             return False
 
     def _paste_tsv_from_text(self, lines):
-        """Вставить распарсенный TSV от активной ячейки
-        (или от якоря выделения, если оно есть)."""
         kind = None
         emp_id_start = None
         idx_start = None
@@ -528,7 +515,6 @@ class TimesheetTab(BoxLayout):
         return True
 
     def _clear_selection_cells(self):
-        """Очистить содержимое всех ячеек выделения."""
         bounds = self._selection_bounds()
         if bounds is None:
             return False
@@ -569,7 +555,6 @@ class TimesheetTab(BoxLayout):
         return True
 
     def _get_focused_cell(self):
-        """Найти ячейку, чей TextInput сейчас в фокусе."""
         for cells in self.day_inputs.values():
             for c in cells:
                 try:
@@ -586,17 +571,10 @@ class TimesheetTab(BoxLayout):
                     pass
         return None
 
-    # ---- НОВЫЙ МЕТОД ------------------------------------------------
     def has_focused_cell(self):
-        """True, если прямо сейчас в фокусе хотя бы одна ячейка табеля.
-
-        Используется главным окном, чтобы не пересобирать таблицу
-        в момент, когда пользователь что-то печатает — иначе
-        сбрасывается курсор и ввод теряется."""
         return self._get_focused_cell() is not None
 
     def _blur_all_cells(self):
-        """Снять фокус со всех ячеек вкладки."""
         for cells in self.day_inputs.values():
             for c in cells:
                 try:
@@ -612,17 +590,12 @@ class TimesheetTab(BoxLayout):
                 except Exception:
                     pass
 
-    # ---------------- выделение диапазона Shift+клик ---------------------
     def _on_cell_touch_down(self, cell, touch):
         info = self._cell_info(cell)
         if info is None:
             return
         emp_id, idx, kind = info
         if self._shift_held:
-            # Снимаем «остаточный» фокус/курсор с любых ячеек —
-            # он мог остаться от предыдущего одиночного клика.
-            # Иначе встроенное текстовое выделение остаётся поверх
-            # фоновой подсветки.
             self._blur_all_cells()
 
             if self._sel_anchor is None or self._sel_anchor[0] != kind:
@@ -729,23 +702,21 @@ class TimesheetTab(BoxLayout):
             ca, cb = cb, ca
         return (kind, ia, ib, ca, cb)
 
-    # ------ обработчики клавиш (навигация) -------------------------------
     def _handle_day_nav(self, emp_id, day_idx, key, modifiers):
         mods = modifiers or []
-        # Ctrl+... обрабатывается в _on_extra_key
         if 'ctrl' in mods:
             return False
 
         shift = 'shift' in mods
 
-        if key == 9:  # Tab
+        if key == 9:
             if shift:
                 self._focus_prev_day(emp_id, day_idx)
             else:
                 self._focus_next_day(emp_id, day_idx)
             return True
 
-        if key == 275:  # Right
+        if key == 275:
             cell = self._get_day_cell(emp_id, day_idx)
             if cell is not None:
                 try:
@@ -755,7 +726,7 @@ class TimesheetTab(BoxLayout):
                     pass
             return False
 
-        if key == 276:  # Left
+        if key == 276:
             cell = self._get_day_cell(emp_id, day_idx)
             if cell is not None:
                 try:
@@ -765,9 +736,9 @@ class TimesheetTab(BoxLayout):
                     pass
             return False
 
-        if key == 274:  # Down
+        if key == 274:
             return self._focus_row_down_day(emp_id, day_idx)
-        if key == 273:  # Up
+        if key == 273:
             return self._focus_row_up_day(emp_id, day_idx)
         return False
 
@@ -778,14 +749,14 @@ class TimesheetTab(BoxLayout):
 
         shift = 'shift' in mods
 
-        if key == 9:  # Tab
+        if key == 9:
             if shift:
                 self._focus_result_prev(emp_id, col_idx)
             else:
                 self._focus_result_next(emp_id, col_idx)
             return True
 
-        if key == 275:  # Right
+        if key == 275:
             cell = self._get_result_cell(emp_id, col_idx)
             if cell is not None:
                 try:
@@ -796,7 +767,7 @@ class TimesheetTab(BoxLayout):
                     pass
             return False
 
-        if key == 276:  # Left
+        if key == 276:
             cell = self._get_result_cell(emp_id, col_idx)
             if cell is not None:
                 try:
@@ -807,13 +778,12 @@ class TimesheetTab(BoxLayout):
                     pass
             return False
 
-        if key == 274:  # Down
+        if key == 274:
             return self._focus_result_row_down(emp_id, col_idx)
-        if key == 273:  # Up
+        if key == 273:
             return self._focus_result_row_up(emp_id, col_idx)
         return False
 
-    # ------ day-cell навигация -------------------------------------------
     def _get_day_cell(self, emp_id, day_idx):
         cells = self.day_inputs.get(emp_id, [])
         if 1 <= day_idx <= len(cells):
@@ -868,7 +838,6 @@ class TimesheetTab(BoxLayout):
                 return True
         return False
 
-    # ------ result-cell навигация ----------------------------------------
     def _get_result_cell(self, emp_id, col_idx):
         if col_idx < 0 or col_idx >= len(RIGHT_COLUMNS):
             return None
@@ -932,14 +901,9 @@ class TimesheetTab(BoxLayout):
             return self._focus_result_by_index(emps[ei - 1], col_idx)
         return False
 
-    # ------ сам фокус -----------------------------------------------------
     def _focus_cell(self, cell):
         try:
             cell.input.focus = True
-            # select_all не вызываем: замена содержимого при вводе
-            # обеспечивается флагом NavTextInput._just_focused —
-            # первый печатный символ сам очищает ячейку.
-            # Без select_all нет синего текстового выделения поверх цифр.
             sv = self._days_sv
             if sv is not None:
                 Clock.schedule_once(lambda dt: self._scroll_to_safe(sv, cell), 0)
@@ -984,7 +948,6 @@ class TimesheetTab(BoxLayout):
         except Exception:
             pass
 
-    # ---------------- диалоги --------------------------------------------
     def confirm_clear(self):
         content = BoxLayout(orientation='vertical', spacing=10, padding=10)
         content.add_widget(Label(
@@ -1004,7 +967,7 @@ class TimesheetTab(BoxLayout):
         content.add_widget(btns)
         popup = Popup(title="Подтверждение", content=content,
                       size_hint=(0.5, 0.35), title_color=LABEL_LIGHT,
-                      title_font=FONT_NAME)
+                      title_font=FONT_NAME, auto_dismiss=False)
 
         def do_clear(*a):
             key = self._get_key()
@@ -1034,8 +997,6 @@ class TimesheetTab(BoxLayout):
             emp_over.pop(col_key, None)
             self._recalc_totals(emp_id)
         else:
-            # Убираем ведущие нули, если сразу за ними идёт цифра
-            # (кейс: в ячейке было «0», пользователь набрал «5» → «05»).
             if len(v) > 1 and v[0] == '0' and v[1].isdigit():
                 v_norm = v.lstrip('0') or '0'
                 if v_norm != v:
@@ -1057,10 +1018,6 @@ class TimesheetTab(BoxLayout):
         if cell is None:
             return
         if focused:
-            # Ячейка получила фокус — _just_focused уже выставлен в
-            # CenteredField._on_focus. select_all не нужен: первый
-            # печатный символ сам заменит содержимое, а синего
-            # текстового выделения поверх цифр не будет.
             pass
         else:
             if cell.input.text.strip() == '':
@@ -1102,7 +1059,7 @@ class TimesheetTab(BoxLayout):
         content.add_widget(btns)
         popup = Popup(title="Сброс правок", content=content,
                       size_hint=(0.5, 0.35), title_color=LABEL_LIGHT,
-                      title_font=FONT_NAME)
+                      title_font=FONT_NAME, auto_dismiss=False)
 
         def do_reset(*a):
             key = self._get_key()
@@ -1115,7 +1072,6 @@ class TimesheetTab(BoxLayout):
         no.bind(on_press=popup.dismiss)
         popup.open()
 
-    # ---------------- основная загрузка ----------------------------------
     def load_timesheet(self):
         self._loading = True
         try:
@@ -1136,7 +1092,8 @@ class TimesheetTab(BoxLayout):
 
             night_flags = self.app.data.get('night_flags', {})
             overtime_flags = self.app.data.get('overtime_flags', {})
-            holiday_flags = self.app.data.get('holiday_flags', {})
+            holidays_only_flags = self.app.data.get('holidays_only_flags', {})
+            self._emp_holidays_only = {}
             self._emp_night = {}
             self._emp_overtime = {}
             employees = self._employees_for_ts()
@@ -1145,16 +1102,17 @@ class TimesheetTab(BoxLayout):
                 pos_name = emp.get('position', '')
                 self._emp_night[emp['id']] = bool(night_flags.get(pos_name, False))
                 self._emp_overtime[emp['id']] = bool(overtime_flags.get(pos_name, False))
-                # self._emp_holiday[emp['id']] = bool(holiday_flags.get(pos_name, False))
+                self._emp_holidays_only[emp['id']] = bool(
+                holidays_only_flags.get(pos_name, False))
 
             W_NUM = dp(40)
             W_DAY = dp(46)
-            ROW_H = dp(36)
+            ROW_H = dp(56)  
             HEAD_TOP_H = dp(24)
             HEAD_BOT_H = dp(120)
 
             max_name_w = dp(190)
-            max_pos_w  = dp(150)
+            max_pos_w  = dp(100) 
             for emp in employees:
                 nm_w = measure_text_width(emp.get('name', ''), font_size=14)
                 ps_w = measure_text_width(emp.get('position', ''), font_size=14)
@@ -1163,10 +1121,17 @@ class TimesheetTab(BoxLayout):
                 if ps_w + dp(24) > max_pos_w:
                     max_pos_w = ps_w + dp(24)
             max_name_w = min(max_name_w, dp(500))
-            max_pos_w  = min(max_pos_w,  dp(400))
+            max_pos_w  = min(max_pos_w,  dp(140)) 
 
             W_NAME = max_name_w
             W_POS  = max_pos_w
+
+            row_heights = []
+            for emp in employees:
+                h_name = measure_text_height(emp.get('name', ''), W_NAME - dp(12))
+                h_pos = measure_text_height(emp.get('position', ''), W_POS - dp(12))
+                rh = max(ROW_H, h_name + dp(12), h_pos + dp(12))
+                row_heights.append(rh)
 
             LEFT_W  = W_NUM + W_NAME + W_POS
             RIGHT_W = sum(w for _, _, w in RIGHT_COLUMNS)
@@ -1175,6 +1140,9 @@ class TimesheetTab(BoxLayout):
             BORDER_BLACK = (0, 0, 0, 1)
             LINE_T = 1
 
+            # ============================================================
+            # ВЕРХНЯЯ ЧАСТЬ ШАПКИ
+            # ============================================================
             header_strip = BoxLayout(orientation='horizontal',
                                      size_hint_y=None, height=HEAD_TOP_H,
                                      spacing=0)
@@ -1235,18 +1203,13 @@ class TimesheetTab(BoxLayout):
 
             self.main_container.add_widget(header_strip)
 
-            body = BoxLayout(orientation='horizontal', spacing=0)
+            # ============================================================
+            # НИЖНЯЯ ЧАСТЬ ШАПКИ (фиксированная)
+            # ============================================================
+            header_bottom = BoxLayout(orientation='horizontal', size_hint_y=None,
+                                      height=HEAD_BOT_H, spacing=0)
 
-            left_sv = SmartScrollView(do_scroll_x=False, do_scroll_y=True,
-                                 size_hint=(None, 1), width=LEFT_W,
-                                 bar_width=dp(8), scroll_type=['bars'],
-                                 effect_cls=NoOverscrollEffect)
-            left_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
-            left_grid.width = LEFT_W
-            _stretch_grid(left_grid, left_sv)
-
-            lh = BoxLayout(size_hint=(None, None),
-                            size=(LEFT_W, HEAD_BOT_H), spacing=0)
+            lh = BoxLayout(size_hint=(None, 1), width=LEFT_W, spacing=0)
             c = self._lbl_bg("№", W_NUM, HEAD_BOT_H)
             add_left_border(c, color=BORDER_BLACK, thickness=LINE_T)
             add_right_border(c, color=BORDER_BLACK, thickness=LINE_T)
@@ -1258,23 +1221,70 @@ class TimesheetTab(BoxLayout):
             add_right_border(c, color=BORDER_BLACK, thickness=LINE_T)
             lh.add_widget(c)
             add_bottom_border(lh, color=BORDER_BLACK, thickness=LINE_T)
-            left_grid.add_widget(lh)
+
+            # Контейнер для шапки дней
+            days_head_container = StencilView(size_hint=(1, 1))
+            dh = BoxLayout(size_hint=(None, None), size=(DAYS_W, HEAD_BOT_H),
+                           spacing=0)
+            for i, dt in enumerate(day_types):
+                wd_idx = date(y, m, i + 1).weekday()
+                dh.add_widget(DayHeader(i + 1, day_type=dt,
+                                         weekday_idx=wd_idx,
+                                         show_right=True,
+                                         size_hint=(None, None),
+                                         size=(W_DAY, HEAD_BOT_H)))
+            add_bottom_border(dh, color=BORDER_BLACK, thickness=LINE_T)
+            days_head_container.add_widget(dh)
+
+            rh_box = BoxLayout(size_hint=(None, 1), width=RIGHT_W, spacing=0)
+            for i, (label, key_, w) in enumerate(RIGHT_COLUMNS):
+                last = (i == len(RIGHT_COLUMNS) - 1)
+                vl = VerticalLabel(text=label,
+                                    font_size=9,
+                                    pad_top=6,
+                                    size_hint=(None, None),
+                                    size=(w if last else w - LINE_T, HEAD_BOT_H))
+                if i == 0:
+                    add_left_border(vl, color=BORDER_BLACK, thickness=LINE_T)
+                rh_box.add_widget(vl)
+                if not last:
+                    rh_box.add_widget(vsep(color=BORDER_BLACK, thickness=LINE_T))
+            add_bottom_border(rh_box, color=BORDER_BLACK, thickness=LINE_T)
+
+            header_bottom.add_widget(lh)
+            header_bottom.add_widget(days_head_container)
+            header_bottom.add_widget(rh_box)
+            self.main_container.add_widget(header_bottom)
+
+            # ============================================================
+            # СОДЕРЖИМОЕ (прокручиваемая часть)
+            # ============================================================
+            body = BoxLayout(orientation='horizontal', spacing=0)
+
+            left_sv = SmartScrollView(do_scroll_x=False, do_scroll_y=True,
+                                 size_hint=(None, 1), width=LEFT_W,
+                                 bar_width=dp(8), scroll_type=['bars'],
+                                 effect_cls=NoOverscrollEffect)
+            left_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
+            left_grid.width = LEFT_W
+            _stretch_grid(left_grid, left_sv)
 
             for idx, emp in enumerate(employees):
+                rh = row_heights[idx]
                 r = BoxLayout(size_hint=(None, None),
-                              size=(LEFT_W, ROW_H), spacing=0)
-                num_lbl = self._lbl(str(idx + 1), W_NUM, ROW_H)
+                              size=(LEFT_W, rh), spacing=0)
+                num_lbl = self._lbl(str(idx + 1), W_NUM, rh)
                 add_left_border(num_lbl, color=BORDER_BLACK, thickness=LINE_T)
                 add_right_border(num_lbl, color=BORDER_BLACK, thickness=LINE_T)
                 r.add_widget(num_lbl)
 
                 name_lbl = self._lbl(emp.get('name', ''),
-                                      W_NAME, ROW_H, align_left=True)
+                                      W_NAME, rh, align_left=True)
                 add_right_border(name_lbl, color=BORDER_BLACK, thickness=LINE_T)
                 r.add_widget(name_lbl)
 
-                pos_lbl = self._lbl(emp.get('position', ''),
-                                     W_POS, ROW_H, align_left=True)
+                pos_lbl = self._lbl(emp.get('position', ''), W_POS, rh,
+                                     align_left=True, shorten=False)
                 add_right_border(pos_lbl, color=BORDER_BLACK, thickness=LINE_T)
                 r.add_widget(pos_lbl)
 
@@ -1292,22 +1302,11 @@ class TimesheetTab(BoxLayout):
             days_grid.bind(minimum_width=days_grid.setter('width'))
             _stretch_grid(days_grid, days_sv)
 
-            dh = BoxLayout(size_hint=(None, None),
-                            size=(DAYS_W, HEAD_BOT_H), spacing=0)
-            for i, dt in enumerate(day_types):
-                wd_idx = date(y, m, i + 1).weekday()
-                dh.add_widget(DayHeader(i + 1, day_type=dt,
-                                         weekday_idx=wd_idx,
-                                         show_right=True,
-                                         size_hint=(None, None),
-                                         size=(W_DAY, HEAD_BOT_H)))
-            add_bottom_border(dh, color=BORDER_BLACK, thickness=LINE_T)
-            days_grid.add_widget(dh)
-
-            for emp in employees:
+            for idx, emp in enumerate(employees):
+                rh = row_heights[idx]
                 emp_id = emp['id']
                 r = BoxLayout(size_hint=(None, None),
-                              size=(DAYS_W, ROW_H), spacing=0)
+                              size=(DAYS_W, rh), spacing=0)
                 day_values = ts.get(emp_id, {})
                 cells = []
                 for d in range(1, days_in_month + 1):
@@ -1319,7 +1318,7 @@ class TimesheetTab(BoxLayout):
                                     on_cell_touch_down=self._on_cell_touch_down,
                                     extra_key_callback=self._on_extra_key,
                                     size_hint=(None, None),
-                                    size=(W_DAY, ROW_H))
+                                    size=(W_DAY, rh))
                     cell.input.bind(text=lambda inst, val, eid=emp_id:
                                     self._on_day_change(eid))
                     r.add_widget(cell)
@@ -1330,6 +1329,20 @@ class TimesheetTab(BoxLayout):
             days_sv.add_widget(days_grid)
             body.add_widget(days_sv)
 
+            # Синхронизация горизонтальной прокрутки и позиции шапки
+            def _update_days_header(*args):
+                try:
+                    dh.y = days_head_container.y
+                    max_scroll = max(0, DAYS_W - days_sv.width)
+                    dh.x = days_head_container.x - (days_sv.scroll_x * max_scroll)
+                except Exception:
+                    pass
+                    
+            days_sv.bind(scroll_x=_update_days_header)
+            days_sv.bind(size=_update_days_header)
+            days_head_container.bind(pos=_update_days_header, size=_update_days_header)
+            Clock.schedule_once(_update_days_header, 0)
+
             right_sv = SmartScrollView(do_scroll_x=False, do_scroll_y=True,
                                   size_hint=(None, 1), width=RIGHT_W,
                                   bar_width=dp(8), scroll_type=['bars'],
@@ -1339,37 +1352,21 @@ class TimesheetTab(BoxLayout):
             right_grid.width = RIGHT_W
             _stretch_grid(right_grid, right_sv)
 
-            rh = BoxLayout(size_hint=(None, None),
-                            size=(RIGHT_W, HEAD_BOT_H), spacing=0)
-            for i, (label, key_, w) in enumerate(RIGHT_COLUMNS):
-                last = (i == len(RIGHT_COLUMNS) - 1)
-                vl = VerticalLabel(text=label,
-                                    font_size=9,
-                                    pad_top=6,
-                                    size_hint=(None, None),
-                                    size=(w if last else w - LINE_T, HEAD_BOT_H))
-                if i == 0:
-                    add_left_border(vl, color=BORDER_BLACK, thickness=LINE_T)
-                rh.add_widget(vl)
-                if not last:
-                    rh.add_widget(vsep(color=BORDER_BLACK, thickness=LINE_T))
-            add_bottom_border(rh, color=BORDER_BLACK, thickness=LINE_T)
-            right_grid.add_widget(rh)
-
-            for emp in employees:
+            for idx, emp in enumerate(employees):
+                rh = row_heights[idx]
                 emp_id = emp['id']
                 r = BoxLayout(size_hint=(None, None),
-                              size=(RIGHT_W, ROW_H), spacing=0)
+                              size=(RIGHT_W, rh), spacing=0)
                 labels = {}
                 last_i = len(RIGHT_COLUMNS) - 1
                 for i, (_, key_, w) in enumerate(RIGHT_COLUMNS):
                     cb = self._make_result_nav_callback(emp_id, i)
                     cell = ResultCell(
-                        text='0', fg_color=LABEL_LIGHT,
+                        text='0', fg_color=config.TABLE_FG,
                         show_left=(i == 0),
                         show_right=(i < last_i),
                         border_color=BORDER_BLACK, border_th=LINE_T,
-                        size_hint=(None, None), size=(w, ROW_H),
+                        size_hint=(None, None), size=(w, rh),
                         on_key_callback=cb,
                         on_cell_touch_down=self._on_cell_touch_down,
                         extra_key_callback=self._on_extra_key,
@@ -1403,18 +1400,17 @@ class TimesheetTab(BoxLayout):
         finally:
             self._loading = False
 
-    # ---------------- вспомогательные ------------------------------------
     @staticmethod
-    def _lbl(text, w, h, bold=False, align_left=False):
+    def _lbl(text, w, h, bold=False, align_left=False, shorten=False):
         lbl = Label(text=text, bold=bold,
                     size_hint=(None, None), size=(w, h),
-                    color=LABEL_LIGHT,
+                    color=config.TABLE_FG,
                     font_name=FONT_NAME, font_size=dp(14),
                     halign='left' if align_left else 'center',
-                    valign='middle')
-        if align_left:
-            lbl.bind(size=lambda inst, val: setattr(
-                inst, 'text_size', (val[0] - 6, val[1])))
+                    valign='middle',
+                    shorten=shorten,
+                    shorten_from='right',
+                    text_size=(w - 6, h))
         return lbl
 
     @staticmethod
@@ -1450,8 +1446,9 @@ class TimesheetTab(BoxLayout):
         values = [c.input.text for c in cells]
         night_on = self._emp_night.get(emp_id, False)
         overtime_on = self._emp_overtime.get(emp_id, False)
-        # holiday_on = self._emp_holiday.get(emp_id, False)
-        res = analyze_row(values, self._day_types, night_on)
+        holidays_only = self._emp_holidays_only.get(emp_id, False)
+        res = analyze_row(values, self._day_types, night_on, holidays_only)
+
         if overtime_on:
             apply_overtime(res, self._get_norm_hours())
         else:
