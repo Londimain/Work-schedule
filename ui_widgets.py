@@ -294,6 +294,9 @@ class CenteredSpinner(AnchorLayout):
 
     def _on_open(self, inst, value):
         if value:
+            from kivy.core.window import Window
+            # Ограничиваем максимальную высоту (70% экрана), чтобы список не улетал за края
+            self.spinner._dropdown.max_height = Window.height * 0.7
             Clock.schedule_once(self._align_dropdown, 0)
             Clock.schedule_once(self._align_dropdown, 0.05)
 
@@ -301,10 +304,23 @@ class CenteredSpinner(AnchorLayout):
         try:
             drop = self.spinner._dropdown
             sp = self.spinner
+            from kivy.core.window import Window
             wx, wy = sp.to_window(sp.x, sp.y)
+            
             drop.width = sp.width
             drop.x = wx
-            drop.top = wy
+            
+            # Отступ от нижнего и верхнего края экрана
+            margin = dp(40)
+            
+            # Если список уперся в самый низ, приподнимаем его
+            if drop.y < margin:
+                drop.y = margin
+                
+            # Если список уперся в самый верх, опускаем его
+            if drop.top > Window.height - margin:
+                drop.top = Window.height - margin
+                
         except Exception:
             pass
 

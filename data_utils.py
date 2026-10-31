@@ -3,6 +3,7 @@
 """Загрузка/сохранение данных и пересчёт итогов."""
 import os
 import json
+from calendar import monthrange
 from datetime import date
 
 from config import (DATA_FILE, RIGHT_COLUMNS, CODES,
@@ -161,19 +162,20 @@ def load_data():
                 data.setdefault('positions', list(DEFAULT_POSITIONS))
                 data.setdefault('night_flags', {})
                 data.setdefault('overtime_flags', {})
-                data.setdefault('holidays_only_flags', {})
+                data.setdefault('no_weekends_flags', {})
                 data.setdefault('departments', list(DEFAULT_DEPARTMENTS))
                 data.setdefault('organization', DEFAULT_ORG)
                 data.setdefault('energetic_name', DEFAULT_ENERGETIC)
                 data.setdefault('director_name', DEFAULT_DIRECTOR)
                 data.setdefault('department_energetic', {})
                 data.setdefault('signer_positions', ['Энергетик'])
+                data.setdefault('extra_employees', {})
                 for emp in data['employees']:
                     emp.setdefault('department', '')
                     emp.setdefault('show_in_timesheet', False)
-                    emp.setdefault('is_contract', True)   # <— ДОБАВИТЬ
+                    emp.setdefault('is_contract', True)
                 data = apply_local_overrides(data)
-                data = apply_local_order(data)      # <— ДОБАВЛЕНО
+                data = apply_local_order(data)
                 return data
         except Exception:
             pass
@@ -182,16 +184,17 @@ def load_data():
         "positions": list(DEFAULT_POSITIONS),
         "night_flags": {},
         "overtime_flags": {},
-        "holidays_only_flags": {},
+        "no_weekends_flags": {},
         "departments": list(DEFAULT_DEPARTMENTS),
         "organization": DEFAULT_ORG,
         "energetic_name": DEFAULT_ENERGETIC,
         "department_energetic": {},
         "signer_positions": ['Энергетик'],
         "director_name": DEFAULT_DIRECTOR,
+        "extra_employees": {},
     }
     data = apply_local_overrides(data)
-    data = apply_local_order(data)                  # <— ДОБАВЛЕНО
+    data = apply_local_order(data)
     return data
 
 
@@ -223,6 +226,47 @@ def classify_day(y, m, d):
         return 'weekend'
     return 'work'
 
+def get_pre_holiday_days(y, m):
+    """Возвращает список чисел месяца, которые являются предпраздничными
+    рабочими днями (рабочий день непосредственно перед праздником).
+
+    Каждый такой день сокращает норму месяца на 1 час.
+    Например, если 8 марта — праздник, а 7 марта — рабочий день,
+    то 7 марта попадёт в этот список.
+    """
+    days_in_month = monthrange(y, m)[1]
+    result = []
+    for d in range(1, days_in_month + 1):
+        if classify_day(y, m, d) != 'work':
+            continue
+        # Следующий календарный день (с переходом через границу месяца/года)
+        if d < days_in_month:
+            ny, nm, nd = y, m, d + 1
+        elif m == 12:
+            ny, nm, nd = y + 1, 1, 1
+        else:
+            ny, nm, nd = y, m + 1, 1
+        if (nm, nd) in HOLIDAYS:
+            result.append(d)
+    return result
+
+
+def calc_norm_hours(y, m):
+    """Норма рабочего времени за месяц с учётом предпраздничных дней.
+
+    Возвращает (norm_hours, work_days, pre_holiday_count):
+      norm_hours       — итоговая норма (work_days * 8 − pre_holiday_count);
+      work_days        — количество обычных рабочих дней;
+      pre_holiday_count — количество предпраздничных рабочих дней.
+
+    Праздничные дни в норму не входят вообще.
+    """
+    days_in_month = monthrange(y, m)[1]
+    work_days = sum(1 for d in range(1, days_in_month + 1)
+                    if classify_day(y, m, d) == 'work')
+    pre_days = get_pre_holiday_days(y, m)
+    norm = work_days * 8.0 - len(pre_days)
+    return norm, work_days, len(pre_days)
 
 def calc_night_hours(h):
     try:
@@ -240,12 +284,14 @@ def calc_night_hours(h):
     return 0
 
 def analyze_row(values, day_types, night_enabled=False,
-                holidays_only=False, *args, **kwargs):
+                no_weekends=False, *args, **kwargs):
     res = {key: 0 for _, key, _ in RIGHT_COLUMNS}
     res['часы'] = 0.0
     res['сверхурочные'] = 0.0
     res['ночные'] = 0.0
     res['праздничные'] = 0.0
+    res['выходные_часы'] = 0.0
+    res['_выходные_часы'] = 0.0
 
     for i, v in enumerate(values):
         if v is None or str(v).strip() == '':
@@ -282,12 +328,14 @@ def analyze_row(values, day_types, night_enabled=False,
             continue
 
         dt = day_types[i] if i < len(day_types) else 'work'
-        # «Без праздничных»: выходные не считаются праздничными,
-        # только реальные праздники.
+        # Только реальные праздники дают часы в колонку «праздничные».
+        # Работа в выходной день сюда НЕ попадает — одинаково для всех.
         if dt == 'holiday':
             res['праздничные'] += h
-        elif dt == 'weekend' and not holidays_only:
-            res['праздничные'] += h
+        elif dt == 'weekend':
+            res['_выходные_часы'] += h   # для исключения из сверхурочных
+            if not no_weekends:
+                res['выходные_часы'] += h # Для отображения в новой колонке
 
         res['явки'] += 1
         res['часы'] += h
@@ -316,13 +364,11 @@ def analyze_row(values, day_types, night_enabled=False,
     return res
 
 def apply_overtime(res, norm_hours):
-    # Часы, отработанные в выходные и праздники, оплачиваются отдельно 
-    # (как минимум в двойном размере). Поэтому они НЕ должны участвовать 
+    # Часы, отработанные в выходные и праздники, оплачиваются отдельно
+    # (как минимум в двойном размере). Поэтому они НЕ должны участвовать
     # в расчёте сверхурочных, чтобы не было двойной оплаты.
-    
-    # Получаем "чистые" часы, отработанные только в рабочие дни:
-    work_hours = res.get('часы', 0.0) - res.get('праздничные', 0.0)
-    
+    weekend_h = res.get('_выходные_часы', 0.0)
+    work_hours = res.get('часы', 0.0) - res.get('праздничные', 0.0) - weekend_h
     over = work_hours - norm_hours
     res['сверхурочные'] = over if over > 0 else 0.0
     return res

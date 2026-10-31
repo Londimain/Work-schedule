@@ -20,14 +20,16 @@ Config.set('graphics', 'window_state', 'maximized')
 Config.set('kivy', 'keyboard_mode', 'system')
 Config.set('kivy', 'scroll_timeout', '250')
 Config.set('kivy', 'scroll_distance', '20')
+# Esc не должен закрывать приложение
+Config.set('kivy', 'exit_on_escape', '0')
 
 from kivy.core.text import LabelBase
 from kivy.core.window import Window
 
 # =========================================================================
-# ВЕРСИЯ
+# ВЕРСИЯ (хранится в отдельном файле version.py)
 # =========================================================================
-APP_VERSION = "1.0.0"
+from version import APP_VERSION  # noqa: F401  (реэкспорт для остальных модулей)
 
 # =========================================================================
 # ШРИФТ
@@ -106,7 +108,7 @@ DEFAULT_DIRECTOR = "Авчинников С. А."
 DELETE_PASSWORD = "admins"      # пароль для подтверждения удаления
 
 HOLIDAYS = {
-    (1, 1), (1, 7), (2, 23), (3, 8), (5, 1),
+    (1, 1), (1, 2), (1, 7), (2, 23), (3, 8), (5, 1),
     (5, 9), (7, 3), (11, 7), (12, 25),
 }
 
@@ -153,9 +155,10 @@ RIGHT_COLUMNS = [
     ("Текущий простой",             "текущий_простой",   40),
     ("Опоздания",                   "опозд",             44),
     ("Всего",                       "часы",              52),
-    ("сверхурочные",                "сверхурочные",      50),
-    ("ночные",                      "ночные",            46),
-    ("праздничные",                 "праздничные",       50),
+    ("в т.ч. сверхурочные",         "сверхурочные",      50),
+    ("в т.ч. ночные",               "ночные",            46),
+    ("в т.ч. выходной",             "выходные_часы",     50),
+    ("в т.ч. праздничные",          "праздничные",       50),
 ]
 
 CODES = {
@@ -187,9 +190,17 @@ def _apply_icon_windows(window_title):
         return
     try:
         import ctypes
+
+
         user32 = ctypes.windll.user32
 
-        hwnd = user32.FindWindowW(None, window_title)
+        # Ищем окно не по заголовку (он может меняться), а по классу SDL_app
+        hwnd = user32.FindWindowW("SDL_app", None)
+        
+        # Если вдруг не нашли по классу, пробуем по заголовку
+        if not hwnd:
+            hwnd = user32.FindWindowW(None, window_title)
+            
         if not hwnd:
             return
 
@@ -200,12 +211,14 @@ def _apply_icon_windows(window_title):
         ICON_SMALL      = 0
         ICON_BIG        = 1
 
+        # Загружаем иконки из файла
         hicon_big = user32.LoadImageW(
             0, ICON_PATH, IMAGE_ICON, 0, 0,
             LR_LOADFROMFILE | LR_DEFAULTSIZE)
         hicon_small = user32.LoadImageW(
             0, ICON_PATH, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
 
+        # Устанавливаем иконки
         if hicon_big:
             user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
         if hicon_small:
@@ -271,10 +284,10 @@ _THEME_COLORS = {
         'SPINNER_BG':     (0.20, 0.30, 0.55, 1),
         'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
         'TOPBAR_BG':      (0.11, 0.12, 0.15, 1),
-        'WINDOW_BG':      (0.15, 0.15, 0.15, 1), # Темный фон окна
-        'TABLE_BG':       (0.15, 0.15, 0.15, 1), # Темный фон таблиц
+        'WINDOW_BG':      (0.15, 0.15, 0.15, 1),
+        'TABLE_BG':       (0.15, 0.15, 0.15, 1),
         'EXIT_BG':        (0.20, 0.30, 0.55, 1),
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1), # Белый текст
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
     },
     'blue': {
         'WEEKEND_BG':     (0.82, 0.88, 1.00, 1),
@@ -293,10 +306,10 @@ _THEME_COLORS = {
         'SPINNER_BG':     (0.15, 0.30, 0.60, 1),
         'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
         'TOPBAR_BG':      (0.10, 0.15, 0.25, 1),
-        'WINDOW_BG':      (0.08, 0.12, 0.20, 1), # Темно-синий
+        'WINDOW_BG':      (0.08, 0.12, 0.20, 1),
         'TABLE_BG':       (0.08, 0.12, 0.20, 1),
         'EXIT_BG':        (0.15, 0.25, 0.50, 1),
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1), # Белый текст
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
     },
     'green': {
         'WEEKEND_BG':     (0.85, 1.00, 0.88, 1),
@@ -315,10 +328,10 @@ _THEME_COLORS = {
         'SPINNER_BG':     (0.20, 0.45, 0.25, 1),
         'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
         'TOPBAR_BG':      (0.10, 0.20, 0.10, 1),
-        'WINDOW_BG':      (0.08, 0.15, 0.08, 1), # Темно-зеленый
+        'WINDOW_BG':      (0.08, 0.15, 0.08, 1),
         'TABLE_BG':       (0.08, 0.15, 0.08, 1),
         'EXIT_BG':        (0.15, 0.45, 0.25, 1),
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1), # Белый текст
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
     },
     'warm': {
         'WEEKEND_BG':     (1.00, 0.88, 0.80, 1),
@@ -337,10 +350,10 @@ _THEME_COLORS = {
         'SPINNER_BG':     (0.55, 0.30, 0.15, 1),
         'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
         'TOPBAR_BG':      (0.25, 0.15, 0.10, 1),
-        'WINDOW_BG':      (0.18, 0.10, 0.08, 1), # Темно-коричневый
+        'WINDOW_BG':      (0.18, 0.10, 0.08, 1),
         'TABLE_BG':       (0.18, 0.10, 0.08, 1),
         'EXIT_BG':        (0.50, 0.25, 0.15, 1),
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1), # Белый текст
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
     },
     'light': {
         'WEEKEND_BG':     (0.95, 0.85, 0.85, 1),
@@ -362,7 +375,7 @@ _THEME_COLORS = {
         'WINDOW_BG':      (0.92, 0.92, 0.92, 1),
         'TABLE_BG':       (0.92, 0.92, 0.92, 1),
         'EXIT_BG':        (0.45, 0.55, 0.70, 1),
-        'TABLE_FG':       (0.10, 0.10, 0.10, 1), # Белый текст
+        'TABLE_FG':       (0.10, 0.10, 0.10, 1),
     },
 }
 
@@ -371,7 +384,7 @@ THEME_LABELS = {
     'blue':     'Синяя',
     'green':    'Зелёная',
     'warm':     'Тёплая',
-    'light':    'Светлая', # <--- ДОБАВИТЬ
+    'light':    'Светлая',
 }
 
 CURRENT_THEME = 'standard'

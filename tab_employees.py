@@ -1,14 +1,6 @@
 # tab_employees.py
 # -*- coding: utf-8 -*-
-"""Вкладка «Рабочий персонал».
-
-Порядок сотрудников и отделов меняется через контекстное меню
-по правому клику мыши. Пункты меню показываются по ситуации,
-а выбранная строка/полоса подсвечивается жёлтой рамкой,
-пока меню открыто.
-"""
-import config  # noqa: F401 — настройка Kivy первой
-
+"""Вкладка «Рабочий персонал»."""
 import config  # noqa: F401 — настройка Kivy первой
 
 from datetime import datetime
@@ -26,7 +18,6 @@ from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
-
 from kivy.uix.textinput import TextInput
 
 from config import (FONT_NAME, LABEL_LIGHT, DEFAULT_POSITIONS,
@@ -37,21 +28,15 @@ from data_utils import (save_data, set_show_in_timesheet,
                         save_local_order)
 from ui_helpers import (add_bottom_border, add_top_border,
                         add_left_border, add_right_border, vsep,
-                        NoOverscrollEffect, ask_password_and_run)
+                        NoOverscrollEffect, ask_password_and_run,
+                        bind_enter_key)
 from ui_widgets import CenteredSpinner
 
 
 # ---------------------------------------------------------------------------
 class RightClickBox(BoxLayout):
-    """BoxLayout, который:
-
-    • ловит правый клик мыши и вызывает переданный колбэк;
-    • умеет рисовать вокруг себя жёлтую рамку выделения —
-      set_selected(True/False).
-    """
-
-    SELECT_COLOR = (1.00, 0.72, 0.10, 1)   # насыщенно-жёлтый
-    SELECT_TH = 3                          # толщина рамки в dp
+    SELECT_COLOR = (1.00, 0.72, 0.10, 1)
+    SELECT_TH = 3
 
     def __init__(self, on_right_click=None, **kwargs):
         super().__init__(**kwargs)
@@ -64,11 +49,9 @@ class RightClickBox(BoxLayout):
         self.bind(pos=self._update_sel, size=self._update_sel)
         Clock.schedule_once(self._init_sel_canvas, 0)
 
-    # ---- обводка ---------------------------------------------------------
     def _init_sel_canvas(self, dt=0):
         if self._sel_top is not None:
             return
-        from kivy.graphics import Color, Rectangle
         with self.canvas.after:
             Color(*self.SELECT_COLOR)
             self._sel_top = Rectangle(pos=self.pos, size=(0, 0))
@@ -103,7 +86,6 @@ class RightClickBox(BoxLayout):
         self._sel_right.pos = (x + w - t, y)
         self._sel_right.size = (t, h)
 
-    # ---- правый клик -----------------------------------------------------
     def on_touch_down(self, touch):
         if (getattr(touch, 'button', None) == 'right'
                 and self.collide_point(*touch.pos)):
@@ -121,14 +103,12 @@ class EmployeesTab(BoxLayout):
         super().__init__(orientation='vertical', **kwargs)
         self.app = app
         
-        # --- НОВЫЙ КОД ---
         with self.canvas.before:
             Color(*config.TABLE_BG)
             self._bg = Rectangle(pos=self.pos, size=self.size)
         self.bind(pos=lambda i, v: setattr(self._bg, 'pos', v),
                   size=lambda i, v: setattr(self._bg, 'size', v))
         
-        self._org_save_ev = None
         self._build()
 
     def _build(self):
@@ -157,27 +137,6 @@ class EmployeesTab(BoxLayout):
         top.add_widget(dept_btn)
 
         top.add_widget(Widget())
-
-        top.add_widget(Label(text="Организация:", size_hint_x=None,
-                             width=dp(110), color=LABEL_LIGHT,
-                             font_name=FONT_NAME))
-        org_wrap = TextInput(
-            text=self.app.data.get('organization', DEFAULT_ORG),
-            multiline=False,
-            font_size=dp(14), font_name=FONT_NAME,
-            foreground_color=(0.05, 0.05, 0.05, 1),
-            background_color=(1, 1, 1, 1),
-            cursor_color=(0.10, 0.30, 0.70, 1),
-            cursor_width=dp(2),
-            selection_color=(0.20, 0.45, 0.90, 0.40),
-            padding=[dp(8), dp(9), dp(8), dp(6)],
-            size_hint=(None, None),
-            size=(dp(320), dp(30)),
-        )
-        org_wrap.bind(text=self._on_org_change)
-        top.add_widget(org_wrap)
-        self.org_wrap = org_wrap
-
         self.add_widget(top)
 
         self.header_holder = GridLayout(cols=1, size_hint_y=None,
@@ -194,13 +153,6 @@ class EmployeesTab(BoxLayout):
         scroll.add_widget(self.list_layout)
         self.add_widget(scroll)
         self.refresh()
-
-    def _on_org_change(self, inst, value):
-        self.app.data['organization'] = value
-        if self._org_save_ev:
-            self._org_save_ev.cancel()
-        self._org_save_ev = Clock.schedule_once(
-            lambda *a: save_data(self.app.data), 0.5)
 
     def _active_dept(self):
         for emp in self.app.data['employees']:
@@ -225,6 +177,7 @@ class EmployeesTab(BoxLayout):
                       size_hint=(0.55, 0.4), title_color=LABEL_LIGHT,
                       title_font=FONT_NAME, auto_dismiss=False)
         btn.bind(on_press=popup.dismiss)
+        bind_enter_key(popup, popup.dismiss)
         popup.open()
 
     def _toggle_in_timesheet(self, idx, value):
@@ -338,8 +291,10 @@ class EmployeesTab(BoxLayout):
         if not cleaned:
             return
 
+        cleaned.append((None, None))
+        cleaned.append(("Отмена", lambda: None))
+
         content = BoxLayout(orientation='vertical', spacing=2, padding=4)
-        # auto_dismiss=False отключает закрытие меню при клике мимо
         popup = Popup(
             title='',
             content=content,
@@ -368,7 +323,6 @@ class EmployeesTab(BoxLayout):
         for t, cb in cleaned:
             if t is None:
                 sep = Widget(size_hint_y=None, height=sep_h)
-                from kivy.graphics import Color, Rectangle
                 with sep.canvas.before:
                     Color(0.35, 0.35, 0.40, 1)
                     _r = Rectangle(pos=sep.pos, size=sep.size)
@@ -502,7 +456,6 @@ class EmployeesTab(BoxLayout):
             lambda t, i=idx, w=row: self._show_employee_menu(i, t, w)
         )
 
-        # Было: color=LABEL_LIGHT
         row.add_widget(Label(text=str(display_num), size_hint_x=0.4,
                              font_name=FONT_NAME, font_size=dp(15),
                              color=config.TABLE_FG))
@@ -511,7 +464,7 @@ class EmployeesTab(BoxLayout):
                              font_name=FONT_NAME, font_size=dp(15),
                              color=config.TABLE_FG))
         row.add_widget(vsep(color=config.TABLE_FG))
-        # Создаем подпись должности с переносом текста и цветом из темы
+        
         pos_lbl = Label(text=emp.get('position', ''), size_hint_x=2.3,
                         font_name=FONT_NAME, font_size=dp(15),
                         color=config.TABLE_FG, halign='left', valign='middle',
@@ -562,10 +515,9 @@ class EmployeesTab(BoxLayout):
             bar = BoxLayout(size_hint_y=None, height=dp(30),
                             padding=(0, 0, 0, 0))
 
-        from kivy.graphics import Color as _Color, Rectangle as _Rect
         with bar.canvas.before:
-            _Color(*bg)
-            rect = _Rect(pos=bar.pos, size=bar.size)
+            Color(*bg)
+            rect = Rectangle(pos=bar.pos, size=bar.size)
         bar.bind(pos=lambda i, v, r=rect: setattr(r, 'pos', v),
                  size=lambda i, v, r=rect: setattr(r, 'size', v))
 
@@ -580,7 +532,6 @@ class EmployeesTab(BoxLayout):
     def _build_header(self):
         self.header_holder.clear_widgets()
         header = BoxLayout(size_hint_y=None, height=dp(35), spacing=0)
-        # Замените все color=LABEL_LIGHT на config.TABLE_FG
         header.add_widget(Label(text="№", bold=True, size_hint_x=0.4,
                                  font_name=FONT_NAME, font_size=dp(15),
                                  color=config.TABLE_FG))
@@ -655,6 +606,8 @@ class EmployeesTab(BoxLayout):
                      'show_in_timesheet': False})
         positions = self.app.data.get('positions', []) or list(DEFAULT_POSITIONS)
         departments = self.app.data.get('departments', [])
+        sorted_positions = sorted(positions, key=lambda s: s.lower())
+        sorted_departments = sorted(departments, key=lambda s: s.lower())
 
         outer = BoxLayout(orientation='vertical', spacing=10,
                           padding=(20, 15, 20, 15))
@@ -690,9 +643,15 @@ class EmployeesTab(BoxLayout):
             color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(15),
             halign='right', valign='middle',
             text_size=(LBL_W, dp(38))))
+        if idx is None:
+            dept_text = '= Выбрать отдел ='
+        else:
+            dept_text = (emp.get('department', '')
+                         or (sorted_departments[0] if sorted_departments else ''))
         dept_w = CenteredSpinner(
-            text=emp.get('department', '') or (departments[0] if departments else ''),
-            values=departments, spinner_height=dp(30), font_size=dp(14))
+            text=dept_text,
+            values=sorted_departments,
+            spinner_height=dp(30), font_size=dp(14))
         dept_w.size_hint = (1, None)
         dept_w.height = dp(32)
         row_dept.add_widget(dept_w)
@@ -705,9 +664,15 @@ class EmployeesTab(BoxLayout):
             color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(15),
             halign='right', valign='middle',
             text_size=(LBL_W, dp(38))))
+        if idx is None:
+            pos_text = '= Выбрать должность ='
+        else:
+            pos_text = (emp.get('position', '')
+                        or (sorted_positions[0] if sorted_positions else ''))
         pos_w = CenteredSpinner(
-            text=emp.get('position', '') or (positions[0] if positions else ''),
-            values=positions, spinner_height=dp(30), font_size=dp(14))
+            text=pos_text,
+            values=sorted_positions,
+            spinner_height=dp(30), font_size=dp(14))
         pos_w.size_hint = (1, None)
         pos_w.height = dp(32)
         row_pos.add_widget(pos_w)
@@ -753,11 +718,16 @@ class EmployeesTab(BoxLayout):
             if not name:
                 return
             new_dept = dept_w.text.strip()
+            if new_dept == '(Выбрать отдел)':
+                new_dept = ''
+            new_pos = pos_w.text.strip()
+            if new_pos == '(Выбрать должность)':
+                new_pos = ''
             show_in = emp.get('show_in_timesheet', False)
             new_emp = {
                 'id': emp.get('id') or f"emp_{int(datetime.now().timestamp() * 1000)}",
                 'name': name,
-                'position': pos_w.text.strip(),
+                'position': new_pos,
                 'department': new_dept,
                 'show_in_timesheet': show_in,
                 'is_contract': cb_contract.active,
@@ -773,6 +743,8 @@ class EmployeesTab(BoxLayout):
 
         save_btn.bind(on_press=on_save)
         cancel_btn.bind(on_press=popup.dismiss)
+        name_w.bind(on_text_validate=lambda *a: on_save())
+        bind_enter_key(popup, on_save)
         popup.open()
 
     def show_positions_popup(self):
@@ -780,7 +752,7 @@ class EmployeesTab(BoxLayout):
         self.app.data.setdefault('night_flags', {})
         self.app.data.setdefault('overtime_flags', {})
         self.app.data.setdefault('holiday_flags', {})
-        self.app.data.setdefault('holidays_only_flags', {})
+        self.app.data.setdefault('no_weekends_flags', {})  # <--- ДОБАВЛЕНО
         positions = self.app.data['positions']
         if not positions:
             self.app.data['positions'] = list(DEFAULT_POSITIONS)
@@ -817,15 +789,15 @@ class EmployeesTab(BoxLayout):
             flags[name] = not flags.get(name, False)
             save_data(self.app.data)
             rebuild_list()
-            
-        def toggle_holidays_only(name):
-            flags = self.app.data.setdefault('holidays_only_flags', {})
+
+        def toggle_overtime(name):
+            flags = self.app.data.setdefault('overtime_flags', {})
             flags[name] = not flags.get(name, False)
             save_data(self.app.data)
             rebuild_list()
 
-        def toggle_overtime(name):
-            flags = self.app.data.setdefault('overtime_flags', {})
+        def toggle_no_weekends(name):  # <--- ДОБАВЛЕНО
+            flags = self.app.data.setdefault('no_weekends_flags', {})
             flags[name] = not flags.get(name, False)
             save_data(self.app.data)
             rebuild_list()
@@ -838,6 +810,7 @@ class EmployeesTab(BoxLayout):
                     self.app.data['positions'].pop(ii)
                     self.app.data.get('night_flags', {}).pop(name, None)
                     self.app.data.get('overtime_flags', {}).pop(name, None)
+                    self.app.data.get('no_weekends_flags', {}).pop(name, None) # <--- ДОБАВЛЕНО
                     self.app.data.get('holidays_only_flags', {}).pop(name, None)
                     save_data(self.app.data)
                     rebuild_list()
@@ -897,9 +870,11 @@ class EmployeesTab(BoxLayout):
                 flags_o = self.app.data.setdefault('overtime_flags', {})
                 old_flag_o = flags_o.pop(old_name, False)
                 flags_o[new_name] = old_flag_o
-                flags_h = self.app.data.setdefault('holidays_only_flags', {})
-                old_flag_h = flags_h.pop(old_name, False)
-                flags_h[new_name] = old_flag_h
+
+                flags_nw = self.app.data.setdefault('no_weekends_flags', {}) # <--- ДОБАВЛЕНО
+                old_flag_nw = flags_nw.pop(old_name, False) # <--- ДОБАВЛЕНО
+                flags_nw[new_name] = old_flag_nw # <--- ДОБАВЛЕНО
+
                 for emp in self.app.data['employees']:
                     if emp.get('position', '') == old_name:
                         emp['position'] = new_name
@@ -910,21 +885,22 @@ class EmployeesTab(BoxLayout):
 
             ok.bind(on_press=on_ok)
             cancel.bind(on_press=p.dismiss)
+            edit_wrap.bind(on_text_validate=lambda *a: on_ok())
+            bind_enter_key(p, on_ok)
             p.open()
 
         def rebuild_list():
             list_grid.clear_widgets()
-            for i, p in enumerate(self.app.data['positions']):
-                # spacing=0, чтобы линии границ смыкались
+            items = [(i, p) for i, p in enumerate(self.app.data['positions'])]
+            items.sort(key=lambda x: x[1].lower())
+            for i, p in items:
                 row = BoxLayout(size_hint_y=None, height=dp(48), spacing=0)
                 
-                # --- ДОБАВЛЯЕМ ГРАНИЦЫ СО ВСЕХ СТОРОН ---
                 add_top_border(row, color=LABEL_LIGHT, thickness=1)
                 add_bottom_border(row, color=LABEL_LIGHT, thickness=1)
                 add_left_border(row, color=LABEL_LIGHT, thickness=1)
                 add_right_border(row, color=LABEL_LIGHT, thickness=1)
 
-                # --- Ночные ---
                 night_on = bool(self.app.data['night_flags'].get(p, False))
                 night_box = BoxLayout(size_hint_x=None, width=dp(110), spacing=4)
                 cb = CheckBox(active=night_on, size_hint_x=None, width=dp(30),
@@ -938,9 +914,8 @@ class EmployeesTab(BoxLayout):
                                             outline_color=(0, 0, 0, 1),
                                             outline_width=1, valign='middle'))
                 row.add_widget(night_box)
-                row.add_widget(vsep(color=LABEL_LIGHT)) # Вертикальная линия
+                row.add_widget(vsep(color=LABEL_LIGHT))
 
-                # --- Сверхурочные ---
                 overtime_on = bool(self.app.data['overtime_flags'].get(p, False))
                 overtime_box = BoxLayout(size_hint_x=None, width=dp(150), spacing=4)
                 cb2 = CheckBox(active=overtime_on, size_hint_x=None, width=dp(30),
@@ -954,40 +929,37 @@ class EmployeesTab(BoxLayout):
                                                outline_color=(0, 0, 0, 1),
                                                outline_width=1, valign='middle'))
                 row.add_widget(overtime_box)
-                row.add_widget(vsep(color=LABEL_LIGHT)) # Вертикальная линия
+                row.add_widget(vsep(color=LABEL_LIGHT))
 
-                # --- Без праздничных ---
-                hol_on = bool(self.app.data['holidays_only_flags'].get(p, False))
-                hol_box = BoxLayout(size_hint_x=None, width=dp(170), spacing=4)
-                cb3 = CheckBox(active=hol_on, size_hint_x=None, width=dp(30),
-                               color=((0.30, 0.90, 0.40, 1) if hol_on
+                # <--- ДОБАВЛЕНО: ЧЕКБОКС "БЕЗ ВЫХОДНЫХ"
+                no_weekends_on = bool(self.app.data.get('no_weekends_flags', {}).get(p, False))
+                no_weekends_box = BoxLayout(size_hint_x=None, width=dp(150), spacing=4)
+                cb3 = CheckBox(active=no_weekends_on, size_hint_x=None, width=dp(30),
+                               color=((0.30, 0.90, 0.40, 1) if no_weekends_on
                                       else (0.85, 0.85, 0.85, 1)))
-                cb3.bind(active=lambda inst, val, nm=p: toggle_holidays_only(nm))
-                hol_box.add_widget(cb3)
-                hol_box.add_widget(Label(text="Без праздничных",
-                                         color=(1, 1, 1, 1),
-                                         font_name=FONT_NAME,
-                                         font_size=dp(13), bold=True,
-                                         outline_color=(0, 0, 0, 1),
-                                         outline_width=1, valign='middle'))
-                row.add_widget(hol_box)
-                row.add_widget(vsep(color=LABEL_LIGHT)) # Вертикальная линия
+                cb3.bind(active=lambda inst, val, nm=p: toggle_no_weekends(nm))
+                no_weekends_box.add_widget(cb3)
+                no_weekends_box.add_widget(Label(text="Без вых.", color=(1, 1, 1, 1),
+                                               font_name=FONT_NAME,
+                                               font_size=dp(14), bold=True,
+                                               outline_color=(0, 0, 0, 1),
+                                               outline_width=1, valign='middle'))
+                row.add_widget(no_weekends_box)
+                row.add_widget(vsep(color=LABEL_LIGHT))
+                # -------------------------------------
 
-                # --- Название должности (по центру) ---
                 pos_lbl = Label(text=p, color=(1, 1, 1, 1),
                                 font_name=FONT_NAME,
                                 font_size=dp(15), bold=True,
                                 outline_color=(0, 0, 0, 1),
                                 outline_width=1,
-                                halign='center', valign='middle', # Выравниваем по центру
+                                halign='center', valign='middle',
                                 shorten=True, shorten_from='right',
                                 size_hint_x=1)
-                # Небольшой отступ, чтобы текст не прилипал к линиям
                 pos_lbl.bind(size=lambda i, v: setattr(i, 'text_size', (v[0]-10, v[1])))
                 row.add_widget(pos_lbl)
-                row.add_widget(vsep(color=LABEL_LIGHT)) # Вертикальная линия
+                row.add_widget(vsep(color=LABEL_LIGHT))
 
-                # --- Кнопки ---
                 edit_btn = Button(text="Изменить", size_hint_x=None, width=dp(100),
                                   font_name=FONT_NAME, font_size=dp(15), bold=True,
                                   background_normal='', background_down='',
@@ -995,7 +967,7 @@ class EmployeesTab(BoxLayout):
                                   color=(1, 1, 1, 1))
                 edit_btn.bind(on_press=lambda *a, ii=i: edit_pos(ii))
                 row.add_widget(edit_btn)
-                row.add_widget(vsep(color=LABEL_LIGHT)) # Вертикальная линия
+                row.add_widget(vsep(color=LABEL_LIGHT))
 
                 del_btn = Button(text="Удалить", size_hint_x=None, width=dp(100),
                                  font_name=FONT_NAME, font_size=dp(15), bold=True,
@@ -1017,7 +989,7 @@ class EmployeesTab(BoxLayout):
             self.app.data['positions'].append(txt)
             self.app.data.setdefault('night_flags', {}).setdefault(txt, False)
             self.app.data.setdefault('overtime_flags', {}).setdefault(txt, False)
-            self.app.data.setdefault('holidays_only_flags', {}).setdefault(txt, False)
+            self.app.data.setdefault('no_weekends_flags', {}).setdefault(txt, False) # <--- ДОБАВЛЕНО
             save_data(self.app.data)
             new_pos_wrap.text = ''
             rebuild_list()
@@ -1060,37 +1032,32 @@ class EmployeesTab(BoxLayout):
                          font_name=FONT_NAME, font_size=dp(16), bold=True)
         content.add_widget(add_btn)
 
-        header = BoxLayout(size_hint_y=None, height=dp(34), spacing=6)
+        header = BoxLayout(size_hint_y=None, height=dp(34), spacing=0)
         header.add_widget(vsep(color=LABEL_LIGHT))
-        header.add_widget(Label(text="№", bold=True, size_hint_x=None,
-                                 width=dp(40), color=LABEL_LIGHT,
-                                 font_name=FONT_NAME, font_size=dp(14)))
+        
+        h_num = Label(text="№", bold=True, size_hint_x=None, width=dp(40), color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='center', valign='middle')
+        header.add_widget(h_num)
         header.add_widget(vsep(color=LABEL_LIGHT))
-        header.add_widget(Label(text="Название отдела", bold=True,
-                                 size_hint_x=2.2, color=LABEL_LIGHT,
-                                 font_name=FONT_NAME, font_size=dp(14),
-                                 halign='left', valign='middle',
-                                 text_size=(dp(220), dp(34))))
+        
+        h_dept = Label(text="Название отдела", bold=True, size_hint_x=2.2, color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='left', valign='middle')
+        h_dept.bind(size=lambda i, v: setattr(i, 'text_size', (v[0] - dp(10), v[1])))
+        header.add_widget(h_dept)
         header.add_widget(vsep(color=LABEL_LIGHT))
-        header.add_widget(Label(text="Должность", bold=True,
-                                 size_hint_x=1.8, color=LABEL_LIGHT,
-                                 font_name=FONT_NAME, font_size=dp(14),
-                                 halign='left', valign='middle',
-                                 text_size=(dp(180), dp(34))))
+        
+        h_pos = Label(text="Должность", bold=True, size_hint_x=1.8, color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='left', valign='middle')
+        h_pos.bind(size=lambda i, v: setattr(i, 'text_size', (v[0] - dp(10), v[1])))
+        header.add_widget(h_pos)
         header.add_widget(vsep(color=LABEL_LIGHT))
-        header.add_widget(Label(text="Фамилия Имя Отчество", bold=True,
-                                 size_hint_x=2.5, color=LABEL_LIGHT,
-                                 font_name=FONT_NAME, font_size=dp(14),
-                                 halign='left', valign='middle',
-                                 text_size=(dp(260), dp(34))))
+        
+        h_fio = Label(text="Фамилия Имя Отчество", bold=True, size_hint_x=2.5, color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='left', valign='middle')
+        h_fio.bind(size=lambda i, v: setattr(i, 'text_size', (v[0] - dp(10), v[1])))
+        header.add_widget(h_fio)
         header.add_widget(vsep(color=LABEL_LIGHT))
-        header.add_widget(Label(text="Действия", bold=True,
-                                 size_hint_x=None,
-                                 width=dp(230), color=LABEL_LIGHT,
-                                 font_name=FONT_NAME, font_size=dp(14),
-                                 halign='center', valign='middle',
-                                 text_size=(dp(230), dp(34))))
+        
+        h_act = Label(text="Действия", bold=True, size_hint_x=None, width=dp(230), color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='center', valign='middle')
+        header.add_widget(h_act)
         header.add_widget(vsep(color=LABEL_LIGHT))
+        
         add_top_border(header, color=LABEL_LIGHT, thickness=1)
         add_bottom_border(header, color=LABEL_LIGHT, thickness=1)
         content.add_widget(header)
@@ -1221,6 +1188,18 @@ class EmployeesTab(BoxLayout):
 
                 inner = BoxLayout(orientation='vertical', spacing=6,
                                   padding=8)
+                
+                search_input = TextInput(
+                    multiline=False, font_size=dp(14), font_name=FONT_NAME,
+                    foreground_color=(0.05, 0.05, 0.05, 1),
+                    background_color=(1, 1, 1, 1),
+                    cursor_color=(0.10, 0.30, 0.70, 1),
+                    padding=[dp(8), dp(8), dp(8), dp(8)],
+                    size_hint_y=None, height=dp(36),
+                    hint_text="Поиск по должностям..."
+                )
+                inner.add_widget(search_input)
+
                 sv = ScrollView(scroll_type=['bars'], bar_width=dp(8),
                                 effect_cls=NoOverscrollEffect)
                 grid = GridLayout(cols=1, size_hint_y=None, spacing=4)
@@ -1283,11 +1262,13 @@ class EmployeesTab(BoxLayout):
 
                         save_data(self.app.data)
                         rp.dismiss()
-                        rebuild_rows()
+                        rebuild_rows(search_input.text)
                         rebuild_list()
 
                     ok.bind(on_press=do_rename)
                     cancel.bind(on_press=rp.dismiss)
+                    new_wrap.bind(on_text_validate=lambda *a: do_rename())
+                    bind_enter_key(rp, do_rename)
                     rp.open()
 
                 def _delete(name):
@@ -1320,6 +1301,7 @@ class EmployeesTab(BoxLayout):
                                    title_color=LABEL_LIGHT,
                                    title_font=FONT_NAME, auto_dismiss=False)
                         ok.bind(on_press=p2.dismiss)
+                        bind_enter_key(p2, p2.dismiss)
                         p2.open()
                         return
 
@@ -1333,7 +1315,7 @@ class EmployeesTab(BoxLayout):
                                 signers_map.pop(d, None)
                                 
                         save_data(self.app.data)
-                        rebuild_rows()
+                        rebuild_rows(search_input.text)
                         rebuild_list()
 
                     ask_password_and_run(
@@ -1341,16 +1323,25 @@ class EmployeesTab(BoxLayout):
                         description=(f"Удалить должность подписанта:\n"
                                      f"«{name}»?"))
 
-                def rebuild_rows():
+                def rebuild_rows(query=''):
                     grid.clear_widgets()
                     sp_list = list(self.app.data.get(
                         'signer_positions', ['Энергетик']))
+                    
+                    sp_list.sort(key=lambda x: x.lower())
+                    
+                    q = query.strip().lower()
+                    if q:
+                        sp_list = [nm for nm in sp_list if q in nm.lower()]
+
                     if not sp_list:
+                        msg = "(ничего не найдено)" if q else "(список пуст)"
                         grid.add_widget(Label(
-                            text="(список пуст)", color=LABEL_LIGHT,
+                            text=msg, color=LABEL_LIGHT,
                             font_name=FONT_NAME, font_size=dp(14),
                             size_hint_y=None, height=dp(40)))
                         return
+                        
                     for nm in sp_list:
                         row = BoxLayout(size_hint_y=None,
                                         height=dp(40), spacing=4)
@@ -1381,6 +1372,8 @@ class EmployeesTab(BoxLayout):
                         row.add_widget(del_btn)
 
                         grid.add_widget(row)
+
+                search_input.bind(text=lambda inst, val: rebuild_rows(val))
 
                 rebuild_rows()
                 sv.add_widget(grid)
@@ -1446,8 +1439,8 @@ class EmployeesTab(BoxLayout):
                                       title_color=LABEL_LIGHT,
                                       title_font=FONT_NAME, auto_dismiss=False)
                     err_btn.bind(on_press=err_popup.dismiss)
+                    bind_enter_key(err_popup, err_popup.dismiss)
                     err_popup.open()
-                    return
 
                 if (new_name != old_name
                         and new_name in self.app.data['departments']):
@@ -1477,71 +1470,51 @@ class EmployeesTab(BoxLayout):
 
             ok.bind(on_press=on_ok)
             cancel.bind(on_press=p.dismiss)
+            edit_wrap.bind(on_text_validate=lambda *a: on_ok())
+            fio_w.bind(on_text_validate=lambda *a: on_ok())
+            bind_enter_key(p, on_ok)
             p.open()
 
         def rebuild_list():
             list_grid.clear_widgets()
-            for i, d in enumerate(self.app.data['departments']):
-                row = BoxLayout(size_hint_y=None, height=dp(42), spacing=6)
-
+            items = [(i, d) for i, d in enumerate(self.app.data['departments'])]
+            items.sort(key=lambda x: x[1].lower())
+            
+            for display_num, (i, d) in enumerate(items, start=1):
+                row = BoxLayout(size_hint_y=None, height=dp(42), spacing=0)
                 row.add_widget(vsep(color=LABEL_LIGHT))
 
-                row.add_widget(Label(text=str(i + 1),
-                                      size_hint_x=None, width=dp(40),
-                                      color=LABEL_LIGHT,
-                                      font_name=FONT_NAME, font_size=dp(14),
-                                      halign='center', valign='middle',
-                                      text_size=(dp(40), dp(42))))
+                r_num = Label(text=str(display_num), size_hint_x=None, width=dp(40), color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='center', valign='middle')
+                row.add_widget(r_num)
                 row.add_widget(vsep(color=LABEL_LIGHT))
 
-                row.add_widget(Label(text=d, color=(1, 1, 1, 1),
-                                      size_hint_x=2.2,
-                                      font_name=FONT_NAME,
-                                      font_size=dp(15), bold=True,
-                                      halign='left', valign='middle',
-                                      text_size=(dp(220), dp(42))))
+                r_dept = Label(text=d, color=(1, 1, 1, 1), size_hint_x=2.2, font_name=FONT_NAME, font_size=dp(15), bold=True, halign='left', valign='middle')
+                r_dept.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0] - dp(10), val[1])))
+                row.add_widget(r_dept)
                 row.add_widget(vsep(color=LABEL_LIGHT))
 
                 sign_pos, sign_fio = get_signer(d)
-                row.add_widget(Label(text=sign_pos,
-                                      size_hint_x=1.8,
-                                      color=(0.85, 0.90, 1.0, 1),
-                                      font_name=FONT_NAME,
-                                      font_size=dp(13),
-                                      halign='left', valign='middle',
-                                      text_size=(dp(180), dp(42))))
+                
+                r_pos = Label(text=sign_pos, size_hint_x=1.8, color=(0.85, 0.90, 1.0, 1), font_name=FONT_NAME, font_size=dp(13), halign='left', valign='middle')
+                r_pos.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0] - dp(10), val[1])))
+                row.add_widget(r_pos)
                 row.add_widget(vsep(color=LABEL_LIGHT))
 
-                row.add_widget(Label(text=sign_fio,
-                                      size_hint_x=2.5,
-                                      color=(0.85, 0.90, 1.0, 1),
-                                      font_name=FONT_NAME,
-                                      font_size=dp(13),
-                                      halign='left', valign='middle',
-                                      text_size=(dp(260), dp(42))))
+                r_fio = Label(text=sign_fio, size_hint_x=2.5, color=(0.85, 0.90, 1.0, 1), font_name=FONT_NAME, font_size=dp(13), halign='left', valign='middle')
+                r_fio.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0] - dp(10), val[1])))
+                row.add_widget(r_fio)
                 row.add_widget(vsep(color=LABEL_LIGHT))
 
-                btns_box = BoxLayout(size_hint_x=None, width=dp(230),
-                                     spacing=4)
-                edit_btn = Button(text="Изменить",
-                                  font_name=FONT_NAME, font_size=dp(15),
-                                  bold=True,
-                                  background_color=(0.35, 0.55, 0.85, 1),
-                                  color=(1, 1, 1, 1))
-                edit_btn.bind(on_press=lambda *a, ii=i:
-                              open_dept_editor(ii))
+                btns_box = BoxLayout(size_hint_x=None, width=dp(230), spacing=4, padding=(dp(4), dp(4)))
+                edit_btn = Button(text="Изменить", font_name=FONT_NAME, font_size=dp(15), bold=True, background_color=(0.35, 0.55, 0.85, 1), color=(1, 1, 1, 1))
+                edit_btn.bind(on_press=lambda *a, ii=i: open_dept_editor(ii))
                 btns_box.add_widget(edit_btn)
 
-                del_btn = Button(text="Удалить",
-                                 font_name=FONT_NAME, font_size=dp(15),
-                                 bold=True,
-                                 background_color=(0.9, 0.35, 0.35, 1),
-                                 color=(1, 1, 1, 1))
+                del_btn = Button(text="Удалить", font_name=FONT_NAME, font_size=dp(15), bold=True, background_color=(0.9, 0.35, 0.35, 1), color=(1, 1, 1, 1))
                 del_btn.bind(on_press=lambda *a, ii=i: delete_dept(ii))
                 btns_box.add_widget(del_btn)
 
                 row.add_widget(btns_box)
-
                 row.add_widget(vsep(color=LABEL_LIGHT))
 
                 add_bottom_border(row)

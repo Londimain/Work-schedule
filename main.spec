@@ -1,22 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
-import os
-import glob
-from kivy import kivy_data_dir
-from PyInstaller.utils.hooks import collect_submodules
-from kivy_deps import sdl2, angle
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from kivy_deps import sdl2, glew, angle
 
-# 1. Собираем DLL как 2-кортежи (источник, папка_назначения_в_архиве)
-kivy_bins = []
-for p in (sdl2.dep_bins + angle.dep_bins):
-    if os.path.isdir(p):
-        for f in glob.glob(os.path.join(p, '*')):
-            kivy_bins.append((f, '.'))  # <--- Именно 2 элемента!
-
-# 2. Данные Kivy и иконки
-datas = [(kivy_data_dir, 'kivy/data')]
+datas = collect_data_files('kivy')
 datas += [('ico', 'ico')]
 
-# 3. Скрытые импорты
 hiddenimports = collect_submodules('kivy', filter=lambda name: not name.startswith('kivy.garden'))
 hiddenimports += [
     'openpyxl',
@@ -29,13 +17,13 @@ block_cipher = None
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=kivy_bins,  # <--- Передаем сюда
+    binaries=[('opengl32.dll', '.')],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['numpy', 'pandas', 'matplotlib', 'scipy', 'tkinter', 'PIL', 'wx', 'gi', 'gst'],
+    excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -43,18 +31,20 @@ a = Analysis(
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# === РЕЖИМ ONE-FILE ===
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
     a.zipfiles,
     a.datas,
+    *[Tree(p) for p in (sdl2.dep_bins + glew.dep_bins + angle.dep_bins)],
     [],
     name='Work schedule',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,
+    upx=False,         # <--- ОБЯЗАТЕЛЬНО ИЗМЕНИТЬ НА FALSE
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

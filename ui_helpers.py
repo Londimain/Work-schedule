@@ -165,7 +165,26 @@ from kivy.properties import NumericProperty
 class NoOverscrollEffect(ScrollEffect):
     """ScrollEffect без упругого отскока."""
     overscroll = NumericProperty(0)
+
+# ui_helpers.py
+
+def bind_enter_key(popup, callback):
+    """Привязывает Enter (и Numpad Enter) к вызову callback при открытом popup."""
+    from kivy.core.window import Window
+    def _on_key_down(window, key, scancode, codepoint, modifiers):
+        if key in (13, 271):  # 13 - Enter, 271 - Numpad Enter
+            # Проверяем, что этот popup сейчас открыт и является самым верхним
+            if Window.children and Window.children[0] is popup:
+                callback()
+                return True
+        return False
+    Window.bind(on_key_down=_on_key_down)
     
+    def _on_dismiss(*args):
+        Window.unbind(on_key_down=_on_key_down)
+        
+    popup.bind(on_dismiss=_on_dismiss)
+
 def ask_password_and_run(password, on_success,
                          title="Подтверждение удаления",
                          description=None):
@@ -238,7 +257,10 @@ def ask_password_and_run(password, on_success,
             err.text = "Неверный пароль"
             pw.text = ""
 
+    # ... внутри ask_password_and_run ...
     ok.bind(on_press=do_ok)
     cancel.bind(on_press=popup.dismiss)
     pw.bind(on_text_validate=do_ok)
+    
+    bind_enter_key(popup, do_ok)  # <--- ДОБАВИТЬ ЭТУ СТРОКУ
     popup.open()

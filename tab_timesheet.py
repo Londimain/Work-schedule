@@ -16,21 +16,23 @@ from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
 from kivy.uix.widget import Widget
+from kivy.uix.textinput import TextInput
 from kivy.graphics import Color, Rectangle
 from kivy.uix.stencilview import StencilView
+from kivy.uix.anchorlayout import AnchorLayout
 
 from config import (FONT_NAME, LABEL_LIGHT, MONTHS, YEARS,
                     SPINNER_BG, SPINNER_FG, RIGHT_COLUMNS,
                     HEADER_BG, HEADER_FG)
 from data_utils import (save_data, classify_day, analyze_row,
-                        apply_overtime, fmt_hours)
+                        apply_overtime, fmt_hours, calc_norm_hours)
 from ui_helpers import (add_bottom_border, add_top_border,
                         add_left_border, add_right_border,
                         vsep, sync_vertical, measure_text_width,
                         measure_text_height, HorizontalScrollView, SmartScrollView,
-                        NoOverscrollEffect)
+                        NoOverscrollEffect, bind_enter_key)
 from ui_widgets import (VerticalLabel, DayCell, ResultCell, DayHeader,
-                        NavTextInput)
+                        NavTextInput, CenteredSpinner)
 
 def _stretch_grid(grid, sv):
     """Grid должен быть не меньше ScrollView по высоте,
@@ -59,13 +61,13 @@ class TimesheetTab(BoxLayout):
 
         self.day_inputs = {}
         self.total_labels = {}
-        self._emp_holidays_only = {}
         self._last_key = None
         self._loading = False
         self._save_event = None
         self._day_types = []
         self._emp_night = {}
         self._emp_overtime = {}
+        self._emp_no_weekends = {} # <--- ДОБАВЛЕНО
         self._emp_holiday = {}
         self._suppress_result_cb = False
         self._employees_order = []
@@ -74,6 +76,7 @@ class TimesheetTab(BoxLayout):
         self._days_in_month = 0
         self._sel_anchor = None
         self._sel_current = None
+        self._sync_body_height = None
 
         self._shift_held = False
         from kivy.core.window import Window
@@ -84,34 +87,34 @@ class TimesheetTab(BoxLayout):
         self._build()
 
     def _build(self):
-        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=5,
+        self.top_bar = BoxLayout(size_hint_y=None, height=dp(46), spacing=5,
                         padding=(5, 2, 5, 2))
-        top.add_widget(Label(text="Месяц:", size_hint_x=None, width=dp(70),
+        self.top_bar.add_widget(Label(text="Месяц:", size_hint_x=None, width=dp(70),
                              color=LABEL_LIGHT, font_name=FONT_NAME,
                              font_size=dp(15)))
         self.month_spinner = Spinner(text=MONTHS[datetime.now().month - 1],
                                      values=MONTHS, size_hint_x=None, width=dp(150),
                                      font_name=FONT_NAME,
                                      background_color=SPINNER_BG, color=SPINNER_FG)
-        top.add_widget(self.month_spinner)
+        self.top_bar.add_widget(self.month_spinner)
 
-        top.add_widget(Label(text="Год:", size_hint_x=None, width=dp(50),
+        self.top_bar.add_widget(Label(text="Год:", size_hint_x=None, width=dp(50),
                              color=LABEL_LIGHT, font_name=FONT_NAME,
                              font_size=dp(15)))
         self.year_spinner = Spinner(text=str(datetime.now().year),
                                     values=YEARS, size_hint_x=None, width=dp(100),
                                     font_name=FONT_NAME,
                                     background_color=SPINNER_BG, color=SPINNER_FG)
-        top.add_widget(self.year_spinner)
+        self.top_bar.add_widget(self.year_spinner)
 
-        top.add_widget(Widget())
+        self.top_bar.add_widget(Widget())
 
         apply_btn = Button(text="Применить правки", size_hint_x=None, width=dp(170),
                            font_name=FONT_NAME, font_size=dp(15), bold=True,
                            background_color=(0.25, 0.55, 0.85, 1),
                            color=(1, 1, 1, 1))
         apply_btn.bind(on_press=lambda *a: self.apply_overrides())
-        top.add_widget(apply_btn)
+        self.top_bar.add_widget(apply_btn)
 
         reset_btn = Button(text="Сбросить правки",
                            size_hint_x=None, width=dp(170),
@@ -119,17 +122,74 @@ class TimesheetTab(BoxLayout):
                            background_color=(0.5, 0.4, 0.75, 1),
                            color=(1, 1, 1, 1))
         reset_btn.bind(on_press=lambda *a: self.reset_overrides())
-        top.add_widget(reset_btn)
+        self.top_bar.add_widget(reset_btn)
 
         clear_btn = Button(text="Очистить", size_hint_x=None, width=dp(140),
                            font_name=FONT_NAME, font_size=dp(15), bold=True,
                            background_color=(0.9, 0.55, 0.2, 1), color=(1, 1, 1, 1))
         clear_btn.bind(on_press=lambda *a: self.confirm_clear())
-        top.add_widget(clear_btn)
-        self.add_widget(top)
+        self.top_bar.add_widget(clear_btn)
+        self.add_widget(self.top_bar)
 
-        self.main_container = BoxLayout(orientation='vertical', spacing=0)
+        self.main_container = BoxLayout(orientation='vertical', spacing=0, size_hint_y=None)
         self.add_widget(self.main_container)
+
+        # Распорка, чтобы сдвинуть блоки вниз
+        self.add_widget(Widget(size_hint_y=1))
+
+        # --- Отступ между таблицей и блоком временных сотрудников (70dp) ---
+        self.spacer_gap = Widget(size_hint_y=None, height=dp(70))
+        self.add_widget(self.spacer_gap)
+
+        # --- БЛОК ДОПОЛНИТЕЛЬНЫХ СОТРУДНИКОВ ---
+        self.extra_wrapper = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(46), padding=(dp(20), 0, dp(20), 0))
+        
+        # Растягиваем контейнер на всю ширину
+        self.extra_container = BoxLayout(orientation='vertical', size_hint=(1, 1), spacing=dp(5))
+        
+        top_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=10)
+        lbl = Label(text="Временные сотрудники (на этот месяц):", color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_x=None, width=dp(320), halign='left', valign='middle')
+        lbl.bind(size=lambda i, v: setattr(i, 'text_size', v))
+        top_row.add_widget(lbl)
+        
+        add_btn = Button(text="+ Добавить", size_hint_x=None, width=dp(120), font_name=FONT_NAME, background_color=(0.2, 0.6, 0.3, 1), color=(1,1,1,1))
+        add_btn.bind(on_press=self.show_add_extra_popup)
+        top_row.add_widget(add_btn)
+        top_row.add_widget(Widget()) # Отодвигает кнопку влево
+        self.extra_container.add_widget(top_row)
+
+        # Шапка таблицы (фиксированная, вне скролла)
+        self.extra_header = BoxLayout(size_hint_y=None, height=dp(30), spacing=0)
+        with self.extra_header.canvas.before:
+            Color(*HEADER_BG)
+            self._eh_rect = Rectangle(pos=self.extra_header.pos, size=self.extra_header.size)
+        self.extra_header.bind(pos=lambda i,v: setattr(self._eh_rect, 'pos', v), size=lambda i,v: setattr(self._eh_rect, 'size', v))
+        
+        # Ширина колонок: ФИО (350), Должность (растягивается), Действие (100)
+        self.extra_header.add_widget(Label(text="ФИО", color=HEADER_FG, font_name=FONT_NAME, size_hint_x=None, width=dp(350), bold=True))
+        self.extra_header.add_widget(vsep(color=(0.5, 0.5, 0.5, 1)))
+        self.extra_header.add_widget(Label(text="Должность", color=HEADER_FG, font_name=FONT_NAME, size_hint_x=1, bold=True))
+        self.extra_header.add_widget(vsep(color=(0.5, 0.5, 0.5, 1)))
+        self.extra_header.add_widget(Label(text="Действие", color=HEADER_FG, font_name=FONT_NAME, size_hint_x=None, width=dp(100), bold=True))
+        
+        add_top_border(self.extra_header, color=(0.5, 0.5, 0.5, 1))
+        add_bottom_border(self.extra_header, color=(0.5, 0.5, 0.5, 1))
+        self.extra_container.add_widget(self.extra_header)
+
+        # Скролл со списком (убираем scrollbar)
+        self.extra_scroll = ScrollView(size_hint_y=None, height=0, do_scroll_x=False, scroll_type=['content'])
+        self.extra_emp_box = BoxLayout(orientation='vertical', size_hint_y=None, spacing=0)
+        self.extra_emp_box.bind(minimum_height=self.extra_emp_box.setter('height'))
+        self.extra_scroll.add_widget(self.extra_emp_box)
+        self.extra_container.add_widget(self.extra_scroll)
+        
+        self.extra_wrapper.add_widget(self.extra_container)
+        self.add_widget(self.extra_wrapper)
+        # ---------------------------------------
+
+        # --- ОТСТУП СНИЗУ ПОД ТАБЛИЦЕЙ ВРЕМЕННЫХ СОТРУДНИКОВ ---
+        self.bottom_margin = Widget(size_hint_y=None, height=dp(20))
+        self.add_widget(self.bottom_margin)
 
         HINT_BG   = config.TOPBAR_BG
         HINT_FG   = (0.88, 0.90, 0.94, 1)
@@ -153,14 +213,14 @@ class TimesheetTab(BoxLayout):
             ('Tab',  '  стрелки — по ячейкам'),
         ]
 
-        hint_wrap = BoxLayout(orientation='vertical',
+        self.hint_wrap = BoxLayout(orientation='vertical',
                               size_hint_y=None,
                               height=dp(64),
                               padding=(dp(6), dp(4), dp(6), dp(4)))
-        with hint_wrap.canvas.before:
+        with self.hint_wrap.canvas.before:
             Color(*HINT_BG)
-            _hw = Rectangle(pos=hint_wrap.pos, size=hint_wrap.size)
-        hint_wrap.bind(pos=lambda i, v, r=_hw: setattr(r, 'pos', v),
+            _hw = Rectangle(pos=self.hint_wrap.pos, size=self.hint_wrap.size)
+        self.hint_wrap.bind(pos=lambda i, v, r=_hw: setattr(r, 'pos', v),
                        size=lambda i, v, r=_hw: setattr(r, 'size', v))
 
         hint_grid = GridLayout(cols=7, size_hint_y=None, height=dp(56),
@@ -197,26 +257,335 @@ class TimesheetTab(BoxLayout):
 
             hint_grid.add_widget(cell)
 
-        hint_wrap.add_widget(hint_grid)
-        add_top_border(hint_wrap, color=(0, 0, 0, 1), thickness=1)
-        self.add_widget(hint_wrap)
+        self.hint_wrap.add_widget(hint_grid)
+        add_top_border(self.hint_wrap, color=(0, 0, 0, 1), thickness=1)
+        
+        # Прижимаем условные обозначения к низу
+        self.add_widget(self.hint_wrap)
 
         self.month_spinner.bind(text=self._on_period_change)
         self.year_spinner.bind(text=self._on_period_change)
 
-        # self.load_timesheet()
+        self._refresh_extra_list()
+        self.load_timesheet()
+
+    def _get_active_dept(self):
+        """Возвращает отдел, по которому сейчас ведется табель (первый отмеченный)."""
+        for emp in self.app.data.get('employees', []):
+            if emp.get('show_in_timesheet', False):
+                return emp.get('department', '')
+        return ''
+
+    def _get_month_dict(self, key):
+        """Безопасно достает словарь отделов для указанного месяца. 
+        Конвертирует старый формат (список) в новый (словарь)."""
+        extra_all = self.app.data.setdefault('extra_employees', {})
+        if not isinstance(extra_all, dict):
+            extra_all = {}
+            self.app.data['extra_employees'] = extra_all
+            
+        month_dict = extra_all.get(key)
+        if not isinstance(month_dict, dict):
+            if isinstance(month_dict, list):
+                month_dict = {'': month_dict}
+            else:
+                month_dict = {}
+            extra_all[key] = month_dict
+        return month_dict
+
+    def _refresh_extra_list(self):
+        self.extra_emp_box.clear_widgets()
+        key = self._get_key()
+        dept = self._get_active_dept()
         
-    def cleanup(self):
-        """Отвязывает глобальные события Window перед удалением вкладки."""
-        from kivy.core.window import Window
-        try:
-            Window.unbind(on_keyboard=self._on_window_keyboard,
-                          on_key_down=self._on_win_key_down,
-                          on_key_up=self._on_win_key_up)
-        except Exception:
-            pass
-        if hasattr(self, '_save_event') and self._save_event:
-            self._save_event.cancel()
+        month_dict = self._get_month_dict(key)
+        extra = month_dict.get(dept, [])
+
+        self.extra_header.height = dp(30)
+        
+        if not dept:
+            empty_lbl = Label(
+                text="Сначала выберите отдел на вкладке «Рабочий персонал»", 
+                color=(0.8, 0.6, 0.4, 1), 
+                font_name=FONT_NAME, 
+                size_hint_y=None, 
+                height=dp(34)
+            )
+            self.extra_emp_box.add_widget(empty_lbl)
+            self.extra_container.height = dp(36) + dp(5) + dp(30) + dp(34) + dp(5)
+            self.extra_wrapper.height = self.extra_container.height
+            return
+
+        for emp in extra:
+            # Оставляем высоту строки 34, чтобы кнопки не слипались
+            r_box = BoxLayout(size_hint_y=None, height=dp(34), spacing=0)
+            
+            # ФИО
+            n_lbl = Label(text=emp['name'], color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_x=None, width=dp(350), halign='left', valign='middle', padding=(dp(10), 0), shorten=True, shorten_from='right')
+            n_lbl.bind(size=lambda i, v: setattr(i, 'text_size', (v[0]-dp(10), v[1])))
+            r_box.add_widget(n_lbl)
+            
+            r_box.add_widget(vsep(color=(0.4, 0.4, 0.4, 1)))
+            
+            # Должность (растягиваем на всю ширину, убираем переносы строк)
+            pos_text = emp['position'].replace('\n', ' ').strip()
+            p_lbl = Label(text=pos_text, color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_x=1, halign='left', valign='middle', padding=(dp(10), 0), shorten=True, shorten_from='right')
+            p_lbl.bind(size=lambda i, v: setattr(i, 'text_size', (v[0]-dp(10), v[1])))
+            r_box.add_widget(p_lbl)
+            
+            r_box.add_widget(vsep(color=(0.4, 0.4, 0.4, 1)))
+            
+            # Действие (оборачиваем в AnchorLayout, чтобы кнопка была по центру и не растягивалась)
+            btn_wrap = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_x=None, width=dp(100))
+            d_btn = Button(
+                text="Удалить", 
+                size_hint=(None, None), 
+                size=(dp(84), dp(24)), # Оставляем компактный размер
+                font_name=FONT_NAME, 
+                font_size=dp(12), 
+                background_normal='', 
+                background_color=(0.8, 0.3, 0.3, 1), 
+                color=(1,1,1,1)
+            )
+            
+            d_btn.bind(on_press=lambda *args, eid=emp['id']: self._delete_extra_emp(eid))
+            btn_wrap.add_widget(d_btn)
+            r_box.add_widget(btn_wrap)
+
+            add_bottom_border(r_box, color=(0.4, 0.4, 0.4, 1))
+            self.extra_emp_box.add_widget(r_box)
+            
+        if not extra:
+            empty_lbl = Label(
+                text="Нет добавленных сотрудников", 
+                color=(0.6, 0.6, 0.6, 1), 
+                font_name=FONT_NAME, 
+                size_hint_y=None, 
+                height=dp(34) # Тоже 34, чтобы не было скачков
+            )
+            self.extra_emp_box.add_widget(empty_lbl)
+
+        # Пересчитываем высоту с учетом новой высоты строк (34)
+        h = min(max(len(extra), 1) * dp(34), dp(170))
+        self.extra_scroll.height = h
+        self.extra_container.height = dp(36) + dp(5) + dp(30) + h + dp(5)
+        self.extra_wrapper.height = self.extra_container.height
+        
+        if self._sync_body_height:
+            Clock.schedule_once(self._sync_body_height, 0)
+
+    def _show_selection_popup(self, title, items, callback):
+        content = BoxLayout(orientation='vertical', spacing=5, padding=5)
+        
+        search_input = TextInput(
+            multiline=False, font_size=dp(14), font_name=FONT_NAME,
+            foreground_color=(0.05, 0.05, 0.05, 1),
+            background_color=(1, 1, 1, 1),
+            cursor_color=(0.10, 0.30, 0.70, 1),
+            padding=[dp(8), dp(8), dp(8), dp(8)],
+            size_hint_y=None, height=dp(36),
+            hint_text="Введите для поиска..."
+        )
+        content.add_widget(search_input)
+        
+        scroll = ScrollView()
+        grid = GridLayout(cols=1, size_hint_y=None, spacing=2)
+        grid.bind(minimum_height=grid.setter('height'))
+        
+        popup = Popup(title=title, content=content, size_hint=(0.6, 0.5), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+        
+        def do_select(val):
+            callback(val)
+            popup.dismiss()
+            
+        def rebuild_list(query=''):
+            grid.clear_widgets()
+            q = query.lower()
+            for it in items:
+                if q in it.lower():
+                    btn = Button(
+                        text=it, size_hint_y=None, height=dp(36), 
+                        font_name=FONT_NAME, font_size=dp(14), 
+                        background_normal='', background_color=(0.2, 0.2, 0.25, 1), color=(1,1,1,1),
+                        halign='center', valign='middle',
+                        shorten=True, shorten_from='right'
+                    )
+                    btn.bind(size=lambda instance, value: setattr(instance, 'text_size', (value[0] - 20, None)))
+                    btn.bind(on_press=lambda *a, x=it: do_select(x))
+                    grid.add_widget(btn)
+                    
+        search_input.bind(text=lambda inst, val: rebuild_list(val))
+        rebuild_list()
+        
+        scroll.add_widget(grid)
+        content.add_widget(scroll)
+        
+        close_btn = Button(text="Отмена", size_hint_y=None, height=dp(40), font_name=FONT_NAME, color=(1,1,1,1))
+        close_btn.bind(on_press=popup.dismiss)
+        content.add_widget(close_btn)
+        
+        popup.open()
+
+    def show_add_extra_popup(self, *args):
+        dept = self._get_active_dept()
+        if not dept:
+            err_content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+            err_content.add_widget(Label(
+                text="Сначала выберите отдел\nна вкладке «Рабочий персонал»",
+                color=LABEL_LIGHT, halign='center', valign='middle',
+                font_name=FONT_NAME, font_size=dp(15)
+            ))
+            ok = Button(text="ОК", size_hint_y=None, height=dp(40), font_name=FONT_NAME)
+            err_content.add_widget(ok)
+            p = Popup(title="Внимание", content=err_content, size_hint=(0.45, 0.3), title_color=LABEL_LIGHT, title_font=FONT_NAME)
+            ok.bind(on_press=p.dismiss)
+            p.open()
+            return
+
+        content = BoxLayout(orientation='vertical', spacing=10, padding=20)
+        
+        # --- Пружина сверху для центрирования ---
+        content.add_widget(Widget(size_hint_y=1))
+        
+        all_names = sorted(list(set(e['name'] for e in self.app.data.get('employees', []))))
+        positions = self.app.data.get('positions', [])
+        
+        # Контейнер для полей
+        fields = BoxLayout(orientation='vertical', size_hint_y=None, spacing=10)
+        fields.bind(minimum_height=fields.setter('height'))
+        
+        # ФИО
+        name_input = TextInput(
+            multiline=False, font_size=dp(15), font_name=FONT_NAME,
+            foreground_color=(0.05, 0.05, 0.05, 1),
+            background_color=(1, 1, 1, 1),
+            cursor_color=(0.10, 0.30, 0.70, 1),
+            cursor_width=dp(2),
+            padding=[dp(8), dp(10), dp(8), dp(10)],
+            size_hint_y=None, height=dp(40),
+            hint_text="Введите любую фамилию",
+            halign='center'
+        )
+        name_btn = Button(text="Выбрать...", size_hint=(None, None), size=(dp(100), dp(40)), font_name=FONT_NAME)
+        name_btn.bind(on_press=lambda *a: self._show_selection_popup("Выбор сотрудника", all_names, lambda val: setattr(name_input, 'text', val)))
+        
+        name_row = BoxLayout(size_hint_y=None, height=dp(40), spacing=5)
+        name_row.add_widget(name_input)
+        name_row.add_widget(name_btn)
+        
+        # Должность (заменено на Label для гарантированного отображения в одну строку)
+        pos_holder = BoxLayout(size_hint_y=None, height=dp(40))
+        with pos_holder.canvas.before:
+            Color(1, 1, 1, 1)
+            self._pos_rect = Rectangle(pos=pos_holder.pos, size=pos_holder.size)
+        pos_holder.bind(pos=lambda i, v: setattr(self._pos_rect, 'pos', v),
+                        size=lambda i, v: setattr(self._pos_rect, 'size', v))
+        
+        pos_input = Label(
+            text="", font_size=dp(15), font_name=FONT_NAME,
+            color=(0.05, 0.05, 0.05, 1),
+            halign='center', valign='middle', shorten=False
+        )
+        pos_input.bind(size=lambda i, v: setattr(i, 'text_size', v))
+        pos_holder.add_widget(pos_input)
+        
+        pos_btn = Button(text="Выбрать...", size_hint=(None, None), size=(dp(100), dp(40)), font_name=FONT_NAME)
+        pos_btn.bind(on_press=lambda *a: self._show_selection_popup("Выбор должности", positions, lambda val: setattr(pos_input, 'text', val)))
+        
+        pos_row = BoxLayout(size_hint_y=None, height=dp(40), spacing=5)
+        pos_row.add_widget(pos_holder)
+        pos_row.add_widget(pos_btn)
+        
+        fields.add_widget(Label(text="ФИО сотрудника:", color=LABEL_LIGHT, font_name=FONT_NAME, halign='left', size_hint_y=None, height=dp(24)))
+        fields.add_widget(name_row)
+        fields.add_widget(Label(text="Должность:", color=LABEL_LIGHT, font_name=FONT_NAME, halign='left', size_hint_y=None, height=dp(24)))
+        fields.add_widget(pos_row)
+        
+        content.add_widget(fields)
+        
+        # --- Пружина снизу (отделяет поля от кнопок) ---
+        content.add_widget(Widget(size_hint_y=1))
+        
+        # --- Кнопки ---
+        btns = BoxLayout(size_hint_y=None, height=dp(44), spacing=10)
+        ok = Button(text="Добавить", font_name=FONT_NAME, background_color=(0.3, 0.7, 0.3, 1), color=(1,1,1,1))
+        cancel = Button(text="Отмена", font_name=FONT_NAME, color=(1,1,1,1))
+        btns.add_widget(ok)
+        btns.add_widget(cancel)
+        content.add_widget(btns)
+        
+        popup = Popup(title=f"Добавить временного сотрудника (Отдел: {dept})", content=content, size_hint=(0.65, 0.55), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+        
+        def do_add(*args):
+            name = name_input.text.strip()
+            pos = pos_input.text.strip()
+            
+            if not name or not pos:
+                missing = []
+                if not name: missing.append("ФИО")
+                if not pos: missing.append("Должность")
+                
+                err_content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+                err_content.add_widget(Label(
+                    text="Не выбрано:\n• " + "\n• ".join(missing),
+                    color=LABEL_LIGHT, halign='center', valign='middle',
+                    font_name=FONT_NAME, font_size=dp(15)
+                ))
+                err_btn = Button(text="ОК", size_hint_y=None, height=dp(40), font_name=FONT_NAME, background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1))
+                err_content.add_widget(err_btn)
+                err_popup = Popup(title="Внимание", content=err_content, size_hint=(0.45, 0.3), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+                err_btn.bind(on_press=err_popup.dismiss)
+                err_popup.open()
+                return
+            
+            key = self._get_key()
+            month_dict = self._get_month_dict(key)
+            extra = month_dict.setdefault(dept, [])
+            
+            new_id = f"extra_{key}_{int(datetime.now().timestamp() * 1000)}"
+            extra.append({'id': new_id, 'name': name, 'position': pos, 'is_contract': True})
+            save_data(self.app.data)
+            popup.dismiss()
+            self._refresh_extra_list()
+            self.load_timesheet()
+            
+        ok.bind(on_press=do_add)
+        cancel.bind(on_press=popup.dismiss)
+        name_input.bind(on_text_validate=do_add)
+        bind_enter_key(popup, do_add)
+        popup.open()
+
+    def _delete_extra_emp(self, eid):
+        content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+        content.add_widget(Label(
+            text="Удалить временного сотрудника?",
+            color=LABEL_LIGHT, halign='center',
+            font_name=FONT_NAME, font_size=dp(15),
+            outline_color=(0, 0, 0, 1), outline_width=1))
+        btns = BoxLayout(size_hint_y=None, height=dp(40), spacing=10)
+        yes = Button(text="Удалить", background_color=(0.9, 0.35, 0.35, 1), color=(1, 1, 1, 1), font_name=FONT_NAME, font_size=dp(16), bold=True)
+        no = Button(text="Отмена", color=(1, 1, 1, 1), font_name=FONT_NAME, font_size=dp(16), bold=True)
+        btns.add_widget(yes)
+        btns.add_widget(no)
+        content.add_widget(btns)
+        popup = Popup(title="Подтверждение", content=content, size_hint=(0.5, 0.35), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+
+        def do_delete(*a):
+            key = self._get_key()
+            dept = self._get_active_dept()
+            month_dict = self._get_month_dict(key)
+            extra = month_dict.get(dept, [])
+            month_dict[dept] = [e for e in extra if e['id'] != eid]
+            
+            save_data(self.app.data)
+            popup.dismiss()
+            self._refresh_extra_list()
+            self.load_timesheet()
+
+        yes.bind(on_press=do_delete)
+        no.bind(on_press=popup.dismiss)
+        bind_enter_key(popup, do_delete)
+        popup.open()
 
     def _get_key(self):
         m = MONTHS.index(self.month_spinner.text) + 1
@@ -226,16 +595,15 @@ class TimesheetTab(BoxLayout):
     def _get_norm_hours(self):
         y = int(self.year_spinner.text)
         m = MONTHS.index(self.month_spinner.text) + 1
-        days_in_month = monthrange(y, m)[1]
-        work_days = sum(1 for d in range(1, days_in_month + 1)
-                        if classify_day(y, m, d) == 'work')
-        return work_days * 8.0
+        norm, _, _ = calc_norm_hours(y, m)
+        return norm
 
     def _on_period_change(self, *args):
         if self._loading:
             return
         if self._last_key:
             self._save_for_key(self._last_key)
+        self._refresh_extra_list()
         self.load_timesheet()
 
     def _on_win_key_down(self, window, key, scancode, codepoint, modifiers):
@@ -272,8 +640,16 @@ class TimesheetTab(BoxLayout):
         self._schedule_save()
 
     def _employees_for_ts(self):
-        return [emp for emp in self.app.data['employees']
-                if emp.get('show_in_timesheet', False)]
+        key = self._get_key()
+        dept = self._get_active_dept()
+        
+        emps = [emp for emp in self.app.data['employees'] if emp.get('show_in_timesheet', False)]
+        
+        month_dict = self._get_month_dict(key)
+        extra = month_dict.get(dept, [])
+        for e in extra:
+            e['is_extra'] = True
+        return emps + extra
 
     def _make_day_nav_callback(self, emp_id, day_idx):
         def cb(key, modifiers):
@@ -978,6 +1354,7 @@ class TimesheetTab(BoxLayout):
 
         yes.bind(on_press=do_clear)
         no.bind(on_press=popup.dismiss)
+        bind_enter_key(popup, do_clear)
         popup.open()
 
     def _get_overrides(self):
@@ -1070,6 +1447,7 @@ class TimesheetTab(BoxLayout):
 
         yes.bind(on_press=do_reset)
         no.bind(on_press=popup.dismiss)
+        bind_enter_key(popup, do_reset)
         popup.open()
 
     def load_timesheet(self):
@@ -1092,8 +1470,7 @@ class TimesheetTab(BoxLayout):
 
             night_flags = self.app.data.get('night_flags', {})
             overtime_flags = self.app.data.get('overtime_flags', {})
-            holidays_only_flags = self.app.data.get('holidays_only_flags', {})
-            self._emp_holidays_only = {}
+            no_weekends_flags = self.app.data.get('no_weekends_flags', {}) # <--- ДОБАВЛЕНО
             self._emp_night = {}
             self._emp_overtime = {}
             employees = self._employees_for_ts()
@@ -1102,8 +1479,7 @@ class TimesheetTab(BoxLayout):
                 pos_name = emp.get('position', '')
                 self._emp_night[emp['id']] = bool(night_flags.get(pos_name, False))
                 self._emp_overtime[emp['id']] = bool(overtime_flags.get(pos_name, False))
-                self._emp_holidays_only[emp['id']] = bool(
-                holidays_only_flags.get(pos_name, False))
+                self._emp_no_weekends[emp['id']] = bool(no_weekends_flags.get(pos_name, False)) # <--- ДОБАВЛЕНО
 
             W_NUM = dp(40)
             W_DAY = dp(46)
@@ -1126,6 +1502,7 @@ class TimesheetTab(BoxLayout):
             W_NAME = max_name_w
             W_POS  = max_pos_w
 
+            # ДИНАМИЧЕСКАЯ ВЫСОТА СТРОК (чтобы отображались длинные должности)
             row_heights = []
             for emp in employees:
                 h_name = measure_text_height(emp.get('name', ''), W_NAME - dp(12))
@@ -1184,7 +1561,7 @@ class TimesheetTab(BoxLayout):
 
             w_days_att = RIGHT_COLUMNS[0][2] + RIGHT_COLUMNS[1][2]
             w_days_abs = sum(RIGHT_COLUMNS[i][2] for i in range(2, 11))
-            w_work     = sum(RIGHT_COLUMNS[i][2] for i in range(11, 15))
+            w_work     = sum(RIGHT_COLUMNS[i][2] for i in range(11, 16))
 
             right_top = BoxLayout(size_hint=(None, 1), width=RIGHT_W, spacing=0)
             add_left_border(right_top, color=BORDER_BLACK, thickness=LINE_T)
@@ -1259,11 +1636,11 @@ class TimesheetTab(BoxLayout):
             # ============================================================
             # СОДЕРЖИМОЕ (прокручиваемая часть)
             # ============================================================
-            body = BoxLayout(orientation='horizontal', spacing=0)
+            body = BoxLayout(orientation='horizontal', spacing=0, size_hint=(1, None))
 
             left_sv = SmartScrollView(do_scroll_x=False, do_scroll_y=True,
                                  size_hint=(None, 1), width=LEFT_W,
-                                 bar_width=dp(8), scroll_type=['bars'],
+                                 bar_width=0, scroll_type=['content'],
                                  effect_cls=NoOverscrollEffect)
             left_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
             left_grid.width = LEFT_W
@@ -1278,8 +1655,9 @@ class TimesheetTab(BoxLayout):
                 add_right_border(num_lbl, color=BORDER_BLACK, thickness=LINE_T)
                 r.add_widget(num_lbl)
 
+                # Возвращаем перенос строк (shorten=False)
                 name_lbl = self._lbl(emp.get('name', ''),
-                                      W_NAME, rh, align_left=True)
+                                      W_NAME, rh, align_left=True, shorten=False)
                 add_right_border(name_lbl, color=BORDER_BLACK, thickness=LINE_T)
                 r.add_widget(name_lbl)
 
@@ -1294,8 +1672,8 @@ class TimesheetTab(BoxLayout):
             body.add_widget(left_sv)
 
             days_sv = HorizontalScrollView(do_scroll_x=True, do_scroll_y=True,
-                                            bar_width=dp(10),
-                                            scroll_type=['bars', 'content'],
+                                            bar_width=0,
+                                            scroll_type=['content'],
                                             effect_cls=NoOverscrollEffect)
             self._days_sv = days_sv
             days_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
@@ -1345,7 +1723,7 @@ class TimesheetTab(BoxLayout):
 
             right_sv = SmartScrollView(do_scroll_x=False, do_scroll_y=True,
                                   size_hint=(None, 1), width=RIGHT_W,
-                                  bar_width=dp(8), scroll_type=['bars'],
+                                  bar_width=0, scroll_type=['content'],
                                   effect_cls=NoOverscrollEffect)
             self._right_sv = right_sv
             right_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
@@ -1397,6 +1775,33 @@ class TimesheetTab(BoxLayout):
 
             self._last_key = key
 
+            # --- Динамическая высота таблицы (чтобы скроллбар был прямо под последней строкой) ---
+            def _sync_body_height(*args):
+                try:
+                    if self.height <= 100:
+                        return # Пропускаем, если окно еще не отрисовано
+                        
+                    avail_for_main = self.height - self.top_bar.height - self.spacer_gap.height - self.extra_wrapper.height - self.bottom_margin.height - self.hint_wrap.height - dp(10)
+                    avail_for_body = avail_for_main - header_strip.height - header_bottom.height
+                    content_h = sum(row_heights)
+                    target_body_h = min(avail_for_body, content_h + dp(16))
+                    if target_body_h < dp(50):
+                        target_body_h = dp(50)
+                        
+                    if abs(body.height - target_body_h) > 0.5:
+                        body.height = target_body_h
+                    
+                    main_h = header_strip.height + header_bottom.height + target_body_h
+                    if abs(self.main_container.height - main_h) > 0.5:
+                        self.main_container.height = main_h
+                except Exception:
+                    pass
+                    
+            self._sync_body_height = _sync_body_height
+            self.bind(height=_sync_body_height)
+            # ВЫЗЫВАЕМ СРАЗУ, БЕЗ ЗАДЕРЖКИ, ЧТОБЫ НЕ БЫЛО СКАЧКОВ
+            _sync_body_height()
+
         finally:
             self._loading = False
 
@@ -1446,8 +1851,9 @@ class TimesheetTab(BoxLayout):
         values = [c.input.text for c in cells]
         night_on = self._emp_night.get(emp_id, False)
         overtime_on = self._emp_overtime.get(emp_id, False)
-        holidays_only = self._emp_holidays_only.get(emp_id, False)
-        res = analyze_row(values, self._day_types, night_on, holidays_only)
+        no_weekends_on = self._emp_no_weekends.get(emp_id, False) # <--- ДОБАВЛЕНО
+        
+        res = analyze_row(values, self._day_types, night_on, no_weekends_on) # <--- ДОБАВЛЕН 4-й АРГУМЕНТ
 
         if overtime_on:
             apply_overtime(res, self._get_norm_hours())
@@ -1468,7 +1874,7 @@ class TimesheetTab(BoxLayout):
                     new_text = str(overrides[k])
                 else:
                     val = res.get(k, 0)
-                    if k in ('часы', 'сверхурочные', 'ночные', 'праздничные'):
+                    if k in ('часы', 'сверхурочные', 'ночные', 'праздничные', 'выходные_часы'):
                         new_text = fmt_hours(val)
                     else:
                         new_text = str(val)
