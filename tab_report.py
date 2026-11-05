@@ -13,14 +13,16 @@ from ui_helpers import NoOverscrollEffect
 from kivy.metrics import dp
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.button import Button
+from ui_widgets import HoverButton as Button
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
 from kivy.uix.widget import Widget
+from kivy.uix.checkbox import CheckBox
 from kivy.graphics import Color, Rectangle
 from kivy.clock import Clock
+from ui_widgets import CenteredField, LightSpinnerOption
 
 try:
     import openpyxl
@@ -39,7 +41,8 @@ from config import (FONT_NAME, LABEL_LIGHT, MONTHS, YEARS,
                     WEEKDAYS_SHORT, DEFAULT_ORG, BASE_DIR,
                     DEFAULT_ENERGETIC, DEFAULT_DIRECTOR)
 from data_utils import (save_data, classify_day, analyze_row,
-                        apply_overtime, fmt_hours, calc_norm_hours)
+                        apply_overtime, fmt_hours, calc_norm_hours,
+                        set_local_show_legend, get_local_show_legend)
 from ui_widgets import CenteredField
 
 # Базовый шрифт для Excel
@@ -82,7 +85,8 @@ class ReportTab(BoxLayout):
         self.month_spinner = Spinner(text=MONTHS[datetime.now().month - 1],
                                      values=MONTHS, size_hint_x=None, width=dp(150),
                                      font_name=FONT_NAME,
-                                     background_color=SPINNER_BG, color=SPINNER_FG)
+                                     background_color=SPINNER_BG, color=SPINNER_FG,
+                                     option_cls=LightSpinnerOption) # <--- ДОБАВИТЬ ЭТО
         top.add_widget(self.month_spinner)
 
         top.add_widget(Label(text="Год:", size_hint_x=None, width=dp(50),
@@ -91,10 +95,27 @@ class ReportTab(BoxLayout):
         self.year_spinner = Spinner(text=str(datetime.now().year),
                                     values=YEARS, size_hint_x=None, width=dp(100),
                                     font_name=FONT_NAME,
-                                    background_color=SPINNER_BG, color=SPINNER_FG)
+                                    background_color=SPINNER_BG, color=SPINNER_FG,
+                                    option_cls=LightSpinnerOption) # <--- ДОБАВИТЬ ЭТО
         top.add_widget(self.year_spinner)
 
+        # Распорка, которая отодвигает чекбокс и кнопки к правому краю
         top.add_widget(Widget())
+
+        # Чекбокс для условных обозначений (расположен прямо перед кнопками)
+        legend_box = BoxLayout(size_hint_x=None, width=dp(220), spacing=dp(4), padding=(0, 0, dp(10), 0))
+        
+        # Берем сохраненное значение из локальных настроек
+        is_legend_on = get_local_show_legend()
+        self.legend_cb = CheckBox(active=is_legend_on, size_hint_x=None, width=dp(30), color=(1, 1, 1, 1))
+        
+        # При клике сохраняем новое значение в local.json
+        self.legend_cb.bind(active=lambda inst, val: set_local_show_legend(val))
+        
+        legend_lbl = Label(text="Условные обозначения", color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14))
+        legend_box.add_widget(self.legend_cb)
+        legend_box.add_widget(legend_lbl)
+        top.add_widget(legend_box)
 
         excel_btn = Button(text="Сохранить в Excel",
                            size_hint_x=None, width=dp(200),
@@ -318,6 +339,81 @@ class ReportTab(BoxLayout):
                   "  Нажмите «Сохранить в Excel», чтобы получить файл .xlsx"]
         self.preview.text = "\n".join(lines)
 
+    def _draw_legend(self, ws, row, total_cols, border, header_fill):
+        """Рисует блок условных обозначений и возвращает номер следующей строки."""
+        ws.merge_cells(start_row=row, start_column=1, end_row=row + 1, end_column=total_cols)
+        c = ws.cell(row=row, column=1, value="Условные обозначения (вводятся так же, как на странице «Табель»):")
+        c.font = Font(name=EXCEL_FONT, size=23, bold=True)
+        c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+        for r_header in (row, row + 1):
+            for col in range(1, total_cols + 1):
+                ws.cell(row=r_header, column=col).border = border
+                ws.cell(row=r_header, column=col).fill = header_fill
+
+        row += 2
+
+        hints = [
+            ('В', 'выходной'), ('О', 'трудовой отпуск'), ('Б', 'больничный'),
+            ('А', 'за свой счёт'), ('Р', 'отпуск по родам'), ('Н', 'прочие неявки'),
+            ('ДМ', 'день матери'), ('П', 'прогул'), ('Т', 'текущий простой'),
+            ('Ц', 'целосменный простой'), ('У', 'опоздание'), ('8д', 'часы без ночных (8 тоже)'),
+            ('8//N', 'часы // смена (и /)')
+        ]
+
+        blocks = 3
+        block_width = total_cols // blocks
+        start_row_hints = row
+
+        for i, (code, desc) in enumerate(hints):
+            r = start_row_hints + (i // blocks)
+            b = i % blocks
+
+            c_start = b * block_width + 1
+            c_end = (b + 1) * block_width if b < blocks - 1 else total_cols
+
+            c_code_start = c_start
+            c_code_end = min(c_start + 2, c_end)
+            ws.merge_cells(start_row=r, start_column=c_code_start, end_row=r, end_column=c_code_end)
+            cell_code = ws.cell(row=r, column=c_code_start, value=code)
+            cell_code.font = Font(name=EXCEL_FONT, size=16, bold=True, color="000000")
+            cell_code.alignment = Alignment(horizontal='center', vertical='center')
+
+            c_dash = c_code_end + 1
+            if c_dash <= c_end:
+                cell_dash = ws.cell(row=r, column=c_dash, value="—")
+                cell_dash.font = Font(name=EXCEL_FONT, size=16, color="888888")
+                cell_dash.alignment = Alignment(horizontal='center', vertical='center')
+
+            c_desc_start = c_dash + 1
+            if c_desc_start <= c_end:
+                ws.merge_cells(start_row=r, start_column=c_desc_start, end_row=r, end_column=c_end)
+                cell_desc = ws.cell(row=r, column=c_desc_start, value=desc)
+                cell_desc.font = Font(name=EXCEL_FONT, size=16)
+                cell_desc.alignment = Alignment(horizontal='left', vertical='center')
+
+            for col in range(c_start, c_end + 1):
+                ws.cell(row=r, column=col).border = border
+
+        last_r = start_row_hints + (len(hints) - 1) // blocks
+        for r in range(start_row_hints, last_r + 1):
+            for b in range(blocks):
+                c_start = b * block_width + 1
+                c_end = (b + 1) * block_width if b < blocks - 1 else total_cols
+
+                has_data = False
+                for i in range(len(hints)):
+                    if start_row_hints + (i // blocks) == r and (i % blocks) == b:
+                        has_data = True
+                        break
+
+                if not has_data:
+                    ws.merge_cells(start_row=r, start_column=c_start, end_row=r, end_column=c_end)
+                    for col in range(c_start, c_end + 1):
+                        ws.cell(row=r, column=col).border = border
+
+        return last_r + 1
+
     def save_excel(self, *a):
         if not HAS_OPENPYXL:
             from kivy.uix.scrollview import ScrollView as _SV
@@ -379,7 +475,7 @@ class ReportTab(BoxLayout):
         # ШРИФТЫ (Times New Roman)
         f_title = Font(name=EXCEL_FONT, size=25, bold=True, italic=True)
         f_date_bold = Font(name=EXCEL_FONT, size=25, bold=True)
-        f_date_norm = Font(name=EXCEL_FONT, size=23)  # <--- ИЗМЕНИТЬ 25 НА 24
+        f_date_norm = Font(name=EXCEL_FONT, size=23)
         f_italic = Font(name=EXCEL_FONT, size=25, italic=True)
         f_italic_ul = Font(name=EXCEL_FONT, size=25, italic=True, underline='single')
         f_head = Font(name=EXCEL_FONT, size=14, bold=True)
@@ -399,74 +495,74 @@ class ReportTab(BoxLayout):
         approve_col = right_anchor - 17
 
         title_end = 13   
-        date_start = 14  # <--- Включаем пустую ячейку слева (было 15)
-        date_end = 21    # <--- Расширяем вправо, чтобы слово "сентябрь" влезло (было 20)
-        days_start = 23  # <--- Оставляем пустую ячейку (22-ю) для отступа перед днями
+        date_start = 14  
+        date_end = 21    
+        days_start = 23  
         days_end = approve_col - 1 
 
         # Название
-        ws.merge_cells(start_row=5, start_column=1, end_row=5, end_column=title_end)
-        c = ws.cell(row=5, column=1, value="табель учета использования рабочего времени")
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=title_end)
+        c = ws.cell(row=1, column=1, value="табель учета использования рабочего времени")
         c.font = f_title
         c.alignment = Alignment(horizontal='left', vertical='center')
 
         # Дата
-        ws.merge_cells(start_row=5, start_column=date_start, end_row=5, end_column=date_end)
-        c = ws.cell(row=5, column=date_start, value=f"{y}, {MONTHS[m-1].lower()}")
+        ws.merge_cells(start_row=1, start_column=date_start, end_row=1, end_column=date_end)
+        c = ws.cell(row=1, column=date_start, value=f"{y}, {MONTHS[m-1].lower()}")
         c.font = f_date_bold
         c.alignment = Alignment(horizontal='center', vertical='center')
 
         # Календарные дни
-        ws.merge_cells(start_row=5, start_column=days_start, end_row=5, end_column=days_end)
-        c = ws.cell(row=5, column=days_start, value=f"({days_in_month} календарных дней)")
+        ws.merge_cells(start_row=1, start_column=days_start, end_row=1, end_column=days_end)
+        c = ws.cell(row=1, column=days_start, value=f"({days_in_month} календарных дней)")
         c.font = f_date_norm
         c.alignment = Alignment(horizontal='center', vertical='center')
 
         # ВОССТАНОВЛЕННЫЕ НАДПИСИ
         # Предприятие
-        ws.merge_cells('A6:C6')
-        c = ws.cell(row=6, column=1, value="Предприятие")
+        ws.merge_cells('A2:C2')
+        c = ws.cell(row=2, column=1, value="Предприятие")
         c.font = f_italic
         c.alignment = Alignment(horizontal='left', vertical='center')
 
-        ws.merge_cells(start_row=6, start_column=4, end_row=6, end_column=title_end + 3)
-        c = ws.cell(row=6, column=4, value=org)
+        ws.merge_cells(start_row=2, start_column=4, end_row=2, end_column=title_end + 3)
+        c = ws.cell(row=2, column=4, value=org)
         c.font = f_italic_ul
         c.alignment = Alignment(horizontal='left', vertical='center', indent=2)
 
         # Отдел
-        ws.merge_cells('A7:C7')
-        c = ws.cell(row=7, column=1, value="Отдел, цех, участок")
+        ws.merge_cells('A3:C3')
+        c = ws.cell(row=3, column=1, value="Отдел, цех, участок")
         c.font = f_italic
         c.alignment = Alignment(horizontal='left', vertical='center')
 
-        ws.merge_cells(start_row=7, start_column=4, end_row=7, end_column=title_end + 3)
-        c = ws.cell(row=7, column=4, value=dept)
+        ws.merge_cells(start_row=3, start_column=4, end_row=3, end_column=title_end + 3)
+        c = ws.cell(row=3, column=4, value=dept)
         c.font = f_italic_ul
         c.alignment = Alignment(horizontal='left', vertical='center', indent=2)
 
         # Утверждаю
-        ws.merge_cells(start_row=5, start_column=approve_col, end_row=5, end_column=approve_col + 4)
-        c = ws.cell(row=5, column=approve_col, value="Утверждаю:")
+        ws.merge_cells(start_row=1, start_column=approve_col, end_row=1, end_column=approve_col + 4)
+        c = ws.cell(row=1, column=approve_col, value="Утверждаю:")
         c.font = f_sig
         c.alignment = Alignment(horizontal='center', vertical='center')
 
         # Директор
         director_col = right_anchor - 17
-        ws.merge_cells(start_row=6, start_column=director_col, end_row=6, end_column=director_col + 4)
-        c = ws.cell(row=6, column=director_col, value="Директор")
+        ws.merge_cells(start_row=2, start_column=director_col, end_row=2, end_column=director_col + 4)
+        c = ws.cell(row=2, column=director_col, value="Директор")
         c.font = f_sig
         c.alignment = Alignment(horizontal='center', vertical='center')
 
         # ФИО директора
         name_col = right_anchor - 9
-        ws.merge_cells(start_row=6, start_column=name_col, end_row=6, end_column=right_anchor)
-        c = ws.cell(row=6, column=name_col, value=director_name)
+        ws.merge_cells(start_row=2, start_column=name_col, end_row=2, end_column=right_anchor)
+        c = ws.cell(row=2, column=name_col, value=director_name)
         c.font = f_sig
         c.alignment = Alignment(horizontal='center', vertical='center')
 
         # Заголовки таблицы
-        row_h1, row_h2 = 9, 10
+        row_h1, row_h2 = 5, 6
         for col, label in [(1, "№"), (2, "Фамилия И.О."), (3, "Должность")]:
             c = ws.cell(row=row_h1, column=col, value=label)
             c.font = f_head
@@ -708,14 +804,15 @@ class ReportTab(BoxLayout):
                 calc_width = max(calc_width, 7.5)
             ws.column_dimensions[col_letter].width = calc_width
 
-        ws.row_dimensions[5].height = 45
-        ws.row_dimensions[6].height = 35
-        ws.row_dimensions[7].height = 35
-        ws.row_dimensions[8].height = 24
+        ws.row_dimensions[1].height = 45
+        ws.row_dimensions[2].height = 35
+        ws.row_dimensions[3].height = 35
+        ws.row_dimensions[4].height = 24
         ws.row_dimensions[row_h1].height = 30
         ws.row_dimensions[row_h2].height = 150
 
-        row += 5
+        # Уменьшаем отступ перед подписями
+        row += 1
 
         LEFT_COL = 3
         sig_row = row + 2
@@ -728,12 +825,18 @@ class ReportTab(BoxLayout):
         c.font = f_sig
         c.alignment = Alignment(horizontal='left', vertical='center')
 
+        last_print_row = sig_row + 2
+
+        # Добавляем условные обозначения, если стоит галочка
+        if self.legend_cb.active:
+            legend_start_row = sig_row + 4
+            last_print_row = self._draw_legend(ws, legend_start_row, total_cols, border, header_fill)
+
         ws.page_setup.orientation = 'landscape'
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 0
         ws.sheet_properties.pageSetUpPr.fitToPage = True
 
-        last_print_row = sig_row + 2
         try:
             ws.print_area = f"A1:{get_column_letter(total_cols)}{last_print_row}"
         except Exception:
@@ -848,46 +951,46 @@ class ReportTab(BoxLayout):
         days_end = total_cols
 
         # Название
-        ws.merge_cells(start_row=5, start_column=1, end_row=5, end_column=title_end)
-        c = ws.cell(row=5, column=1, value="табель учета использования рабочего времени")
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=title_end)
+        c = ws.cell(row=1, column=1, value="табель учета использования рабочего времени")
         c.font = f_title
         c.alignment = Alignment(horizontal='left', vertical='center')
 
         # Дата
-        ws.merge_cells(start_row=5, start_column=date_start, end_row=5, end_column=date_end)
-        c = ws.cell(row=5, column=date_start, value=f"{y}, {MONTHS[m-1].lower()}")
+        ws.merge_cells(start_row=1, start_column=date_start, end_row=1, end_column=date_end)
+        c = ws.cell(row=1, column=date_start, value=f"{y}, {MONTHS[m-1].lower()}")
         c.font = f_date_bold
         c.alignment = Alignment(horizontal='center', vertical='center')
 
         # Календарные дни
-        ws.merge_cells(start_row=5, start_column=days_start, end_row=5, end_column=days_end)
-        c = ws.cell(row=5, column=days_start, value=f"({days_in_month} календарных дней)")
+        ws.merge_cells(start_row=1, start_column=days_start, end_row=1, end_column=days_end)
+        c = ws.cell(row=1, column=days_start, value=f"({days_in_month} календарных дней)")
         c.font = f_date_norm
         c.alignment = Alignment(horizontal='center', vertical='center')
 
-        # Предприятие (расширено до A6:E6)
-        ws.merge_cells('A6:E6')
-        c = ws.cell(row=6, column=1, value="Предприятие")
+        # Предприятие (расширено до A2:E2)
+        ws.merge_cells('A2:E2')
+        c = ws.cell(row=2, column=1, value="Предприятие")
         c.font = f_italic
         c.alignment = Alignment(horizontal='left', vertical='center')
 
-        ws.merge_cells(start_row=6, start_column=6, end_row=6, end_column=title_end + 3)
-        c = ws.cell(row=6, column=6, value=org)
+        ws.merge_cells(start_row=2, start_column=6, end_row=2, end_column=title_end + 3)
+        c = ws.cell(row=2, column=6, value=org)
         c.font = f_italic_ul
         c.alignment = Alignment(horizontal='left', vertical='center', indent=2)
 
-        # Отдел (расширено до A7:E7)
-        ws.merge_cells('A7:E7')
-        c = ws.cell(row=7, column=1, value="Отдел, цех, участок")
+        # Отдел (расширено до A3:E3)
+        ws.merge_cells('A3:E3')
+        c = ws.cell(row=3, column=1, value="Отдел, цех, участок")
         c.font = f_italic
         c.alignment = Alignment(horizontal='left', vertical='center')
 
-        ws.merge_cells(start_row=7, start_column=6, end_row=7, end_column=title_end + 3)
-        c = ws.cell(row=7, column=6, value=dept)
+        ws.merge_cells(start_row=3, start_column=6, end_row=3, end_column=title_end + 3)
+        c = ws.cell(row=3, column=6, value=dept)
         c.font = f_italic_ul
         c.alignment = Alignment(horizontal='left', vertical='center', indent=2)
 
-        row_h1, row_h2 = 9, 10
+        row_h1, row_h2 = 5, 6
 
         c = ws.cell(row=row_h1, column=1, value="№")
         c.font = f_head
@@ -1050,8 +1153,8 @@ class ReportTab(BoxLayout):
 
         ws.row_dimensions[row].height = 28
 
-        # Отступ сверху (одна пустая ячейка)
-        row += 2
+        # Убираем лишние отступы
+        row += 1
 
         # Норма рабочего времени (label non-bold, value bold)
         ws.row_dimensions[row].height = 32
@@ -1064,9 +1167,6 @@ class ReportTab(BoxLayout):
         c2 = ws.cell(row=row, column=8, value=f"{fmt_hours(norm_hours)} ч")
         c2.font = f_norm_val
         c2.alignment = Alignment(horizontal='left', vertical='center')
-
-        # 1 пустая строка ниже нормы (ниже отступи 1у ячейку)
-        row += 1
 
         ws.column_dimensions['A'].width = 5
         max_name_len = max((len(format_name(emp.get('name', '') or ''))
@@ -1083,88 +1183,17 @@ class ReportTab(BoxLayout):
         col_o = get_column_letter(col_off)
         ws.column_dimensions[col_o].width = max(9.5, max_col_len['вых'] * 1.2 + 2.0)
 
-        ws.row_dimensions[5].height = 45
-        ws.row_dimensions[6].height = 30
-        ws.row_dimensions[7].height = 30
-        ws.row_dimensions[8].height = 24
+        ws.row_dimensions[1].height = 45
+        ws.row_dimensions[2].height = 30
+        ws.row_dimensions[3].height = 30
+        ws.row_dimensions[4].height = 24
         ws.row_dimensions[row_h1].height = 30
         ws.row_dimensions[row_h2].height = 50
 
-        # Легенда ниже нормы (учтена 1 пустая строка под нормой)
-        row += 14
-
-        ws.merge_cells(start_row=row, start_column=1, end_row=row + 1, end_column=total_cols)
-        c = ws.cell(row=row, column=1, value="Условные обозначения (вводятся так же, как на странице «Табель»):")
-        c.font = Font(name=EXCEL_FONT, size=23, bold=True) # Размер 23
-        c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-
-        for r_header in (row, row + 1):
-            for col in range(1, total_cols + 1):
-                ws.cell(row=r_header, column=col).border = border
-                ws.cell(row=r_header, column=col).fill = header_fill
-
-        row += 2
-
-        hints = [
-            ('В', 'выходной'), ('О', 'трудовой отпуск'), ('Б', 'больничный'),
-            ('А', 'за свой счёт'), ('Р', 'отпуск по родам'), ('Н', 'прочие неявки'),
-            ('ДМ', 'день матери'), ('П', 'прогул'), ('Т', 'текущий простой'),
-            ('Ц', 'целосменный простой'), ('У', 'опоздание'), ('8д', 'часы без ночных (8 тоже)'),
-            ('8//N', 'часы // смена (и /)')
-        ]
-
-        blocks = 3
-        block_width = total_cols // blocks
-        start_row_hints = row
-
-        for i, (code, desc) in enumerate(hints):
-            r = start_row_hints + (i // blocks)
-            b = i % blocks
-
-            c_start = b * block_width + 1
-            c_end = (b + 1) * block_width if b < blocks - 1 else total_cols
-
-            c_code_start = c_start
-            c_code_end = min(c_start + 2, c_end)
-            ws.merge_cells(start_row=r, start_column=c_code_start, end_row=r, end_column=c_code_end)
-            cell_code = ws.cell(row=r, column=c_code_start, value=code)
-            cell_code.font = Font(name=EXCEL_FONT, size=16, bold=True, color="000000") # Размер 16
-            cell_code.alignment = Alignment(horizontal='center', vertical='center')
-
-            c_dash = c_code_end + 1
-            if c_dash <= c_end:
-                cell_dash = ws.cell(row=r, column=c_dash, value="—")
-                cell_dash.font = Font(name=EXCEL_FONT, size=16, color="888888") # Размер 16
-                cell_dash.alignment = Alignment(horizontal='center', vertical='center')
-
-            c_desc_start = c_dash + 1
-            if c_desc_start <= c_end:
-                ws.merge_cells(start_row=r, start_column=c_desc_start, end_row=r, end_column=c_end)
-                cell_desc = ws.cell(row=r, column=c_desc_start, value=desc)
-                cell_desc.font = Font(name=EXCEL_FONT, size=16) # Размер 16
-                cell_desc.alignment = Alignment(horizontal='left', vertical='center')
-
-            for col in range(c_start, c_end + 1):
-                ws.cell(row=r, column=col).border = border
-
-        last_r = start_row_hints + (len(hints) - 1) // blocks
-        for r in range(start_row_hints, last_r + 1):
-            for b in range(blocks):
-                c_start = b * block_width + 1
-                c_end = (b + 1) * block_width if b < blocks - 1 else total_cols
-
-                has_data = False
-                for i in range(len(hints)):
-                    if start_row_hints + (i // blocks) == r and (i % blocks) == b:
-                        has_data = True
-                        break
-
-                if not has_data:
-                    ws.merge_cells(start_row=r, start_column=c_start, end_row=r, end_column=c_end)
-                    for col in range(c_start, c_end + 1):
-                        ws.cell(row=r, column=col).border = border
-
-        row = last_r + 1
+        # Легенда ниже нормы (только если стоит галочка)
+        if self.legend_cb.active:
+            row += 4
+            row = self._draw_legend(ws, row, total_cols, border, header_fill)
 
         ws.page_setup.orientation = 'landscape'
         ws.page_setup.fitToWidth = 1

@@ -14,6 +14,7 @@ from kivy.uix.label import Label
 from kivy.uix.spinner import Spinner, SpinnerOption
 from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
+from kivy.uix.button import Button
 
 from config import (FONT_NAME, LABEL_DARK, LABEL_LIGHT,
                     WEEKEND_BG, WEEKEND_FG, HOLIDAY_BG, HOLIDAY_FG,
@@ -24,45 +25,85 @@ from ui_helpers import add_left_border, add_right_border
 
 
 # ---------------------------------------------------------------------------
+class HoverButton(Button):
+    """Кнопка, которая мягко подсвечивается при наведении мыши."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._hovering = False
+        # Накладываем прозрачный слой поверх кнопки
+        with self.canvas.after:
+            self._hover_color = Color(1, 1, 1, 0)
+            self._hover_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self._update_rect, size=self._update_rect)
+        self.bind(state=self._on_state)
+
+        from kivy.core.window import Window
+        Window.bind(mouse_pos=self._on_mouse_pos)
+        self.bind(parent=self._on_parent)
+
+    def _update_rect(self, *a):
+        self._hover_rect.pos = self.pos
+        self._hover_rect.size = self.size
+        if hasattr(self, '_border_line'):
+            # Обновляем координаты обводки при изменении размера/позиции кнопки
+            self._border_line.rectangle = (self.x, self.y, self.width, self.height)
+
+    def _on_parent(self, instance, parent):
+        if parent is None:
+            from kivy.core.window import Window
+            try:
+                Window.unbind(mouse_pos=self._on_mouse_pos)
+            except Exception:
+                pass
+
+    def _on_state(self, inst, value):
+        self._update_hover()
+
+    def _on_mouse_pos(self, window, pos):
+        if not self.get_root_window() or self.disabled:
+            return
+        try:
+            # Переводим локальные координаты виджета в координаты экрана
+            wx, wy = self.to_window(self.x, self.y)
+            # Сравниваем с позицией курсора
+            if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
+                if not self._hovering:
+                    self._hovering = True
+                    self._update_hover()
+            else:
+                if self._hovering:
+                    self._hovering = False
+                    self._update_hover()
+        except Exception:
+            pass
+
+    def _update_hover(self):
+        if self._hovering or self.state == 'down':
+            self._hover_color.rgba = (1, 1, 1, 0.15) # Мягкая белая подсветка
+        else:
+            self._hover_color.rgba = (1, 1, 1, 0)
+
+
+# ---------------------------------------------------------------------------
 class NavTextInput(TextInput):
     """TextInput с двумя внешними обработчиками:
        - extra_key_callback(key, modifiers) — перехват Ctrl+C/V
        - nav_callback(key, modifiers)       — навигация по ячейкам
-    Возврат True означает, что событие обработано и TextInput не должен
-    выполнять своё действие.
-
-    Дополнительно:
-      • первый печатный символ после получения фокуса заменяет всё
-        содержимое ячейки (как в Excel) — реализовано в insert_text;
-      • при зажатом Shift касание поглощается: TextInput не получает
-        фокус и не рисует синий прямоугольник выделения поверх
-        фоновой подсветки ячейки (логика выделения диапазона —
-        на уровне вкладки «Табель»).
     """
     nav_callback = None
     extra_key_callback = None
     _just_focused = False
-
-    # Общий на все экземпляры флаг: зажат ли Shift.
-    # Обновляется вкладкой «Табель» (_on_win_key_down / _on_win_key_up).
     shift_state = {'held': False}
 
     def on_touch_down(self, touch):
         if NavTextInput.shift_state['held'] and self.collide_point(*touch.pos):
-            # Shift+клик: касание поглощаем. Фон ячейки уже подсвечен
-            # через _on_cell_touch_down на уровне DayCell/ResultCell.
-            # Без фокуса не будет ни курсора, ни встроенного
-            # текстового выделения.
             return True
         return super().on_touch_down(touch)
 
     def insert_text(self, substring, from_undo=False):
-        # Первый печатный символ после фокуса заменяет старое значение.
         if self._just_focused and substring and not from_undo:
             self._just_focused = False
             if not self.selection_text:
-                # Очищаем поле, чтобы новый символ заменил всё,
-                # а не добавился к старому («1.85» → «3», а не «1.3»).
                 self.text = ''
                 try:
                     self.cursor = (0, 0)
@@ -71,7 +112,6 @@ class NavTextInput(TextInput):
         return super().insert_text(substring, from_undo=from_undo)
 
     def keyboard_on_key_down(self, window, keycode, text, modifiers):
-        # Определяем числовой код клавиши
         try:
             if isinstance(keycode, (tuple, list)):
                 key = keycode[0]
@@ -82,7 +122,6 @@ class NavTextInput(TextInput):
 
         mods = modifiers or []
 
-        # 1. Сначала спец-перехват (Ctrl+C/V при выделенном диапазоне)
         if self.extra_key_callback is not None and key is not None:
             try:
                 if self.extra_key_callback(key, mods):
@@ -90,7 +129,6 @@ class NavTextInput(TextInput):
             except Exception:
                 pass
 
-        # 2. Затем обычная навигация
         if self.nav_callback is not None and key is not None:
             try:
                 if self.nav_callback(key, mods):
@@ -222,12 +260,15 @@ class CenteredField(FloatLayout):
 # ---------------------------------------------------------------------------
 class LightSpinnerOption(SpinnerOption):
     NORMAL_BG = (0.14, 0.14, 0.16, 1)
-    HOVER_BG  = (0.20, 0.45, 0.85, 1)
+    HOVER_BG  = (0.30, 0.30, 0.35, 1)  # <--- Спокойный серый вместо ярко-синего
     TEXT_COL  = (1.00, 1.00, 1.00, 1)
     OUTLINE   = (0.00, 0.00, 0.00, 1)
     LINE_COL  = (0.42, 0.42, 0.48, 1)
 
     def __init__(self, **kwargs):
+        kwargs.setdefault('size_hint_y', None)
+        kwargs.setdefault('height', dp(44))
+        
         kwargs.setdefault('background_normal', '')
         kwargs.setdefault('background_down', '')
         kwargs.setdefault('background_color', (0, 0, 0, 0))
@@ -242,6 +283,7 @@ class LightSpinnerOption(SpinnerOption):
         self.color = self.TEXT_COL
         self.disabled_color = self.TEXT_COL
         self.bold = True
+        self._hovering = False
 
         with self.canvas.before:
             self._bg_color = Color(*self.NORMAL_BG)
@@ -254,6 +296,35 @@ class LightSpinnerOption(SpinnerOption):
         self.bind(state=self._on_state)
         self.bind(size=self._fix_align)
 
+        from kivy.core.window import Window
+        Window.bind(mouse_pos=self._on_mouse_pos)
+        self.bind(parent=self._on_parent)
+
+    def _on_parent(self, instance, parent):
+        if parent is None:
+            from kivy.core.window import Window
+            try:
+                Window.unbind(mouse_pos=self._on_mouse_pos)
+            except Exception:
+                pass
+
+    def _on_mouse_pos(self, window, pos):
+        if not self.get_root_window() or self.disabled:
+            return
+        try:
+            # Переводим локальные координаты виджета в координаты экрана
+            wx, wy = self.to_window(self.x, self.y)
+            if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
+                if not self._hovering:
+                    self._hovering = True
+                    self._update_bg()
+            else:
+                if self._hovering:
+                    self._hovering = False
+                    self._update_bg()
+        except Exception:
+            pass
+
     def _upd(self, *a):
         self._bg_rect.pos = self.pos
         self._bg_rect.size = self.size
@@ -264,12 +335,13 @@ class LightSpinnerOption(SpinnerOption):
         self.text_size = (self.width - 8, self.height)
 
     def _on_state(self, inst, value):
-        if value == 'down':
+        self._update_bg()
+
+    def _update_bg(self):
+        if self._hovering or self.state == 'down':
             self._bg_color.rgba = self.HOVER_BG
         else:
             self._bg_color.rgba = self.NORMAL_BG
-        self.color = self.TEXT_COL
-        self.bold = True
 
 
 class CenteredSpinner(AnchorLayout):
@@ -295,7 +367,6 @@ class CenteredSpinner(AnchorLayout):
     def _on_open(self, inst, value):
         if value:
             from kivy.core.window import Window
-            # Ограничиваем максимальную высоту (70% экрана), чтобы список не улетал за края
             self.spinner._dropdown.max_height = Window.height * 0.7
             Clock.schedule_once(self._align_dropdown, 0)
             Clock.schedule_once(self._align_dropdown, 0.05)
@@ -310,14 +381,11 @@ class CenteredSpinner(AnchorLayout):
             drop.width = sp.width
             drop.x = wx
             
-            # Отступ от нижнего и верхнего края экрана
             margin = dp(40)
             
-            # Если список уперся в самый низ, приподнимаем его
             if drop.y < margin:
                 drop.y = margin
                 
-            # Если список уперся в самый верх, опускаем его
             if drop.top > Window.height - margin:
                 drop.top = Window.height - margin
                 

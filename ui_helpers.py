@@ -147,15 +147,20 @@ class SmartScrollView(ScrollView):
             return False
         return super().on_touch_move(touch)
 
+# ui_helpers.py (фрагмент)
 class HorizontalScrollView(SmartScrollView):
     def on_scroll_start(self, touch, check_children=True):
         if 'button' in touch.profile and touch.button in ('scrollup', 'scrolldown'):
-            step = 0.05
+            step = 0.05  # Плавный шаг
             if touch.button == 'scrollup':
                 self.scroll_x = max(0.0, self.scroll_x - step)
             else:
                 self.scroll_x = min(1.0, self.scroll_x + step)
+            
+            # Возвращаем True, чтобы событие прокрутки не передавалось дальше 
+            # и не вызывало случайную вертикальную прокрутку (scroll_y)
             return True
+            
         return super().on_scroll_start(touch, check_children)
     
 from kivy.effects.scroll import ScrollEffect
@@ -192,7 +197,7 @@ def ask_password_and_run(password, on_success,
     from kivy.uix.popup import Popup
     from kivy.uix.boxlayout import BoxLayout
     from kivy.uix.label import Label
-    from kivy.uix.button import Button
+    from ui_widgets import HoverButton as Button
     from kivy.uix.textinput import TextInput
     from kivy.metrics import dp
     from config import FONT_NAME, LABEL_LIGHT

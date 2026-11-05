@@ -9,7 +9,7 @@ from datetime import datetime, date
 from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.button import Button
+from ui_widgets import HoverButton as Button
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
@@ -25,14 +25,15 @@ from config import (FONT_NAME, LABEL_LIGHT, MONTHS, YEARS,
                     SPINNER_BG, SPINNER_FG, RIGHT_COLUMNS,
                     HEADER_BG, HEADER_FG)
 from data_utils import (save_data, classify_day, analyze_row,
-                        apply_overtime, fmt_hours, calc_norm_hours)
+                        apply_overtime, fmt_hours, calc_norm_hours,
+                        set_local_results_hidden, get_local_results_hidden)
 from ui_helpers import (add_bottom_border, add_top_border,
                         add_left_border, add_right_border,
                         vsep, sync_vertical, measure_text_width,
                         measure_text_height, HorizontalScrollView, SmartScrollView,
                         NoOverscrollEffect, bind_enter_key)
 from ui_widgets import (VerticalLabel, DayCell, ResultCell, DayHeader,
-                        NavTextInput, CenteredSpinner)
+                        NavTextInput, CenteredSpinner, LightSpinnerOption)
 
 def _stretch_grid(grid, sv):
     """Grid должен быть не меньше ScrollView по высоте,
@@ -67,7 +68,7 @@ class TimesheetTab(BoxLayout):
         self._day_types = []
         self._emp_night = {}
         self._emp_overtime = {}
-        self._emp_no_weekends = {} # <--- ДОБАВЛЕНО
+        self._emp_no_weekends = {} 
         self._emp_holiday = {}
         self._suppress_result_cb = False
         self._employees_order = []
@@ -77,6 +78,20 @@ class TimesheetTab(BoxLayout):
         self._sel_anchor = None
         self._sel_current = None
         self._sync_body_height = None
+
+        # --- ПЕРЕМЕННЫЕ ДЛЯ УПРАВЛЕНИЯ ВИДИМОСТЬЮ ИТОГОВ ---
+        self._results_hidden = get_local_results_hidden()  # <--- Читаем настройку
+        self.right_sv = None
+        self.right_top = None
+        self.right_header = None
+        self.RIGHT_W = 0
+        self.LEFT_W = 0
+        self._all_day_headers = []
+        self._all_day_rows = []
+        self._days_grid = None
+        self._dh = None
+        self._update_days_header_func = None
+        # ---------------------------------------------------
 
         self._shift_held = False
         from kivy.core.window import Window
@@ -95,7 +110,8 @@ class TimesheetTab(BoxLayout):
         self.month_spinner = Spinner(text=MONTHS[datetime.now().month - 1],
                                      values=MONTHS, size_hint_x=None, width=dp(150),
                                      font_name=FONT_NAME,
-                                     background_color=SPINNER_BG, color=SPINNER_FG)
+                                     background_color=SPINNER_BG, color=SPINNER_FG,
+                                     option_cls=LightSpinnerOption) # <--- ДОБАВИТЬ ЭТО
         self.top_bar.add_widget(self.month_spinner)
 
         self.top_bar.add_widget(Label(text="Год:", size_hint_x=None, width=dp(50),
@@ -104,7 +120,8 @@ class TimesheetTab(BoxLayout):
         self.year_spinner = Spinner(text=str(datetime.now().year),
                                     values=YEARS, size_hint_x=None, width=dp(100),
                                     font_name=FONT_NAME,
-                                    background_color=SPINNER_BG, color=SPINNER_FG)
+                                    background_color=SPINNER_BG, color=SPINNER_FG,
+                                    option_cls=LightSpinnerOption) # <--- ДОБАВИТЬ ЭТО
         self.top_bar.add_widget(self.year_spinner)
 
         self.top_bar.add_widget(Widget())
@@ -124,6 +141,18 @@ class TimesheetTab(BoxLayout):
         reset_btn.bind(on_press=lambda *a: self.reset_overrides())
         self.top_bar.add_widget(reset_btn)
 
+        # --- КНОПКА СКРЫТИЯ/ОТОБРАЖЕНИЯ ИТОГОВ ---
+        self.toggle_btn = Button(
+            text="Показать итоги" if self._results_hidden else "Скрыть итоги",
+            size_hint_x=None, width=dp(150),
+            font_name=FONT_NAME, font_size=dp(15), bold=True,
+            background_color=(0.3, 0.7, 0.3, 1) if self._results_hidden else (0.4, 0.6, 0.8, 1), 
+            color=(1, 1, 1, 1)
+        )
+        self.toggle_btn.bind(on_press=self.toggle_results)
+        self.top_bar.add_widget(self.toggle_btn)
+        # ------------------------------------------------
+
         clear_btn = Button(text="Очистить", size_hint_x=None, width=dp(140),
                            font_name=FONT_NAME, font_size=dp(15), bold=True,
                            background_color=(0.9, 0.55, 0.2, 1), color=(1, 1, 1, 1))
@@ -131,7 +160,8 @@ class TimesheetTab(BoxLayout):
         self.top_bar.add_widget(clear_btn)
         self.add_widget(self.top_bar)
 
-        self.main_container = BoxLayout(orientation='vertical', spacing=0, size_hint_y=None)
+        self.main_container = BoxLayout(orientation='vertical', spacing=0, size_hint_y=None, 
+                                        padding=(dp(10), 0, dp(10), 0)) # <--- ДОБАВЛЕНЫ ОТСТУПЫ
         self.add_widget(self.main_container)
 
         # Распорка, чтобы сдвинуть блоки вниз
@@ -152,7 +182,7 @@ class TimesheetTab(BoxLayout):
         lbl.bind(size=lambda i, v: setattr(i, 'text_size', v))
         top_row.add_widget(lbl)
         
-        add_btn = Button(text="+ Добавить", size_hint_x=None, width=dp(120), font_name=FONT_NAME, background_color=(0.2, 0.6, 0.3, 1), color=(1,1,1,1))
+        add_btn = Button(text="+ Добавить", size_hint_x=None, width=dp(120), font_name=FONT_NAME, background_color=config.EXIT_BG, color=(1,1,1,1))
         add_btn.bind(on_press=self.show_add_extra_popup)
         top_row.add_widget(add_btn)
         top_row.add_widget(Widget()) # Отодвигает кнопку влево
@@ -266,8 +296,92 @@ class TimesheetTab(BoxLayout):
         self.month_spinner.bind(text=self._on_period_change)
         self.year_spinner.bind(text=self._on_period_change)
 
+        # Автоматический пересчёт ширины колонок при изменении размера окна
+        self.bind(width=lambda *a: Clock.schedule_once(
+            lambda dt: self._apply_results_visibility(), 0))
+
         self._refresh_extra_list()
         self.load_timesheet()
+
+    # =======================================================================
+    # МЕТОДЫ ДЛЯ УПРАВЛЕНИЯ ВИДИМОСТЬЮ ИТОГОВ
+    # =======================================================================
+    def toggle_results(self, *args):
+        self._results_hidden = not self._results_hidden
+        if self._results_hidden:
+            self.toggle_btn.text = "Показать итоги"
+            self.toggle_btn.background_color = (0.3, 0.7, 0.3, 1)
+        else:
+            self.toggle_btn.text = "Скрыть итоги"
+            self.toggle_btn.background_color = (0.4, 0.6, 0.8, 1)
+            
+        set_local_results_hidden(self._results_hidden)  # <--- Сохраняем настройку
+        self._apply_results_visibility()
+
+    def _apply_results_visibility(self):
+        hidden = getattr(self, '_results_hidden', False)
+        if getattr(self, 'right_sv', None) is None:
+            return
+            
+        w = 0 if hidden else self.RIGHT_W
+        
+        self.right_sv.width = w
+        self.right_sv.opacity = 0 if hidden else 1
+        self.right_sv.disabled = hidden
+        
+        if getattr(self, 'right_top', None) is not None:
+            self.right_top.width = w
+            self.right_top.opacity = 0 if hidden else 1
+            
+        if getattr(self, 'right_header', None) is not None:
+            self.right_header.width = w
+            self.right_header.opacity = 0 if hidden else 1
+            
+        # Пересчет ширины колонок дней месяца
+        if getattr(self, 'LEFT_W', 0) and self._days_in_month > 0:
+            # Учитываем отступы контейнера (по 10dp с каждой стороны)
+            avail_w = self.width - dp(20) - self.LEFT_W - w 
+            new_w_day = max(dp(46), int(avail_w / self._days_in_month))
+            
+            for hdr in getattr(self, '_all_day_headers', []):
+                hdr.width = new_w_day
+            for row in getattr(self, '_all_day_rows', []):
+                row.width = self._days_in_month * new_w_day
+                for child in row.children:
+                    if hasattr(child, 'width'):
+                        child.width = new_w_day
+                        
+            # БЫЛО:
+            # if getattr(self, '_days_grid', None) is not None:
+            #     self._days_grid.width = self._days_in_month * new_w_day
+
+            # СТАЛО:
+            if getattr(self, '_days_grid', None) is not None:
+                # Так как мы привязали width к minimum_width в load_timesheet,
+                # нам достаточно обновить ширину дочерних элементов (строк и ячеек).
+                # GridLayout сам подстроит свою ширину под них.
+                pass
+                
+            if getattr(self, '_dh', None) is not None:
+                self._dh.width = self._days_in_month * new_w_day
+            
+            self.W_DAY = new_w_day
+            
+            # --- НОВЫЙ КОД: Сброс прокрутки в 0, если всё помещается ---
+            if getattr(self, '_days_sv', None) is not None and getattr(self, '_days_grid', None) is not None:
+                if self._days_grid.width <= self._days_sv.width:
+                    self._days_sv.scroll_x = 0
+            # -----------------------------------------------------------
+            
+        if self._sync_body_height:
+            Clock.schedule_once(self._sync_body_height, 0)
+            
+        if getattr(self, '_update_days_header_func', None):
+            # Несколько вызовов, чтобы шапка точно выровнялась после перерисовки
+            Clock.schedule_once(self._update_days_header_func, 0)
+            Clock.schedule_once(self._update_days_header_func, 0.05)
+            Clock.schedule_once(self._update_days_header_func, 0.1)
+    # =======================================================================
 
     def _get_active_dept(self):
         """Возвращает отдел, по которому сейчас ведется табель (первый отмеченный)."""
@@ -1456,6 +1570,8 @@ class TimesheetTab(BoxLayout):
             self.main_container.clear_widgets()
             self.day_inputs.clear()
             self.total_labels.clear()
+            self._all_day_headers = []
+            self._all_day_rows = []
 
             key = self._get_key()
             y = int(self.year_spinner.text)
@@ -1470,7 +1586,7 @@ class TimesheetTab(BoxLayout):
 
             night_flags = self.app.data.get('night_flags', {})
             overtime_flags = self.app.data.get('overtime_flags', {})
-            no_weekends_flags = self.app.data.get('no_weekends_flags', {}) # <--- ДОБАВЛЕНО
+            no_weekends_flags = self.app.data.get('no_weekends_flags', {})
             self._emp_night = {}
             self._emp_overtime = {}
             employees = self._employees_for_ts()
@@ -1479,7 +1595,7 @@ class TimesheetTab(BoxLayout):
                 pos_name = emp.get('position', '')
                 self._emp_night[emp['id']] = bool(night_flags.get(pos_name, False))
                 self._emp_overtime[emp['id']] = bool(overtime_flags.get(pos_name, False))
-                self._emp_no_weekends[emp['id']] = bool(no_weekends_flags.get(pos_name, False)) # <--- ДОБАВЛЕНО
+                self._emp_no_weekends[emp['id']] = bool(no_weekends_flags.get(pos_name, False))
 
             W_NUM = dp(40)
             W_DAY = dp(46)
@@ -1513,6 +1629,9 @@ class TimesheetTab(BoxLayout):
             LEFT_W  = W_NUM + W_NAME + W_POS
             RIGHT_W = sum(w for _, _, w in RIGHT_COLUMNS)
             DAYS_W  = days_in_month * W_DAY
+            
+            self.LEFT_W = LEFT_W
+            self.RIGHT_W = RIGHT_W
 
             BORDER_BLACK = (0, 0, 0, 1)
             LINE_T = 1
@@ -1564,6 +1683,7 @@ class TimesheetTab(BoxLayout):
             w_work     = sum(RIGHT_COLUMNS[i][2] for i in range(11, 16))
 
             right_top = BoxLayout(size_hint=(None, 1), width=RIGHT_W, spacing=0)
+            self.right_top = right_top # СОХРАНЯЕМ ССЫЛКУ
             add_left_border(right_top, color=BORDER_BLACK, thickness=LINE_T)
             right_top.add_widget(self._lbl_bg("Дни явок",
                                                w_days_att - 1, HEAD_TOP_H))
@@ -1603,17 +1723,21 @@ class TimesheetTab(BoxLayout):
             days_head_container = StencilView(size_hint=(1, 1))
             dh = BoxLayout(size_hint=(None, None), size=(DAYS_W, HEAD_BOT_H),
                            spacing=0)
+            self._dh = dh
             for i, dt in enumerate(day_types):
                 wd_idx = date(y, m, i + 1).weekday()
-                dh.add_widget(DayHeader(i + 1, day_type=dt,
+                day_hdr = DayHeader(i + 1, day_type=dt,
                                          weekday_idx=wd_idx,
                                          show_right=True,
                                          size_hint=(None, None),
-                                         size=(W_DAY, HEAD_BOT_H)))
+                                         size=(W_DAY, HEAD_BOT_H))
+                self._all_day_headers.append(day_hdr)
+                dh.add_widget(day_hdr)
             add_bottom_border(dh, color=BORDER_BLACK, thickness=LINE_T)
             days_head_container.add_widget(dh)
 
             rh_box = BoxLayout(size_hint=(None, 1), width=RIGHT_W, spacing=0)
+            self.right_header = rh_box # СОХРАНЯЕМ ССЫЛКУ
             for i, (label, key_, w) in enumerate(RIGHT_COLUMNS):
                 last = (i == len(RIGHT_COLUMNS) - 1)
                 vl = VerticalLabel(text=label,
@@ -1676,15 +1800,24 @@ class TimesheetTab(BoxLayout):
                                             scroll_type=['content'],
                                             effect_cls=NoOverscrollEffect)
             self._days_sv = days_sv
+            # БЫЛО:
+            # days_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
+            # days_grid.width = DAYS_W  # <--- Явно задаем ширину вместо bind
+            # _stretch_grid(days_grid, days_sv)
+
+            # СТАЛО:
             days_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
+            # Привязываем ширину к minimum_width, чтобы GridLayout точно соответствовал содержимому
             days_grid.bind(minimum_width=days_grid.setter('width'))
             _stretch_grid(days_grid, days_sv)
+            self._days_grid = days_grid
 
             for idx, emp in enumerate(employees):
                 rh = row_heights[idx]
                 emp_id = emp['id']
                 r = BoxLayout(size_hint=(None, None),
                               size=(DAYS_W, rh), spacing=0)
+                self._all_day_rows.append(r)
                 day_values = ts.get(emp_id, {})
                 cells = []
                 for d in range(1, days_in_month + 1):
@@ -1711,14 +1844,30 @@ class TimesheetTab(BoxLayout):
             def _update_days_header(*args):
                 try:
                     dh.y = days_head_container.y
-                    max_scroll = max(0, DAYS_W - days_sv.width)
-                    dh.x = days_head_container.x - (days_sv.scroll_x * max_scroll)
+                    # Жестко ограничиваем scroll_x, чтобы не было сдвигов из-за погрешностей float
+                    sx = max(0.0, min(1.0, days_sv.scroll_x))
+                    max_scroll = max(0, dh.width - days_sv.width)
+                    if max_scroll > 0:
+                        dh.x = days_head_container.x - (sx * max_scroll)
+                    else:
+                        dh.x = days_head_container.x
                 except Exception:
                     pass
-                    
+            
+            # Отложенный вызов нужен только для изменения размеров окна,
+            # чтобы Kivy успел пересчитать лэйаут
+            def _delayed_update_days_header(*args):
+                Clock.schedule_once(_update_days_header, 0)
+
+            self._update_days_header_func = _update_days_header
+
+            # Прямая привязка для мгновенной прокрутки без задержек
             days_sv.bind(scroll_x=_update_days_header)
-            days_sv.bind(size=_update_days_header)
-            days_head_container.bind(pos=_update_days_header, size=_update_days_header)
+            
+            # Отложенная привязка для изменения размеров (чтобы не ломалось при разворачивании окна)
+            days_sv.bind(size=_delayed_update_days_header)
+            days_head_container.bind(pos=_delayed_update_days_header, size=_delayed_update_days_header)
+            
             Clock.schedule_once(_update_days_header, 0)
 
             right_sv = SmartScrollView(do_scroll_x=False, do_scroll_y=True,
@@ -1726,6 +1875,7 @@ class TimesheetTab(BoxLayout):
                                   bar_width=0, scroll_type=['content'],
                                   effect_cls=NoOverscrollEffect)
             self._right_sv = right_sv
+            self.right_sv = right_sv # СОХРАНЯЕМ ССЫЛКУ
             right_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
             right_grid.width = RIGHT_W
             _stretch_grid(right_grid, right_sv)
@@ -1801,6 +1951,9 @@ class TimesheetTab(BoxLayout):
             self.bind(height=_sync_body_height)
             # ВЫЗЫВАЕМ СРАЗУ, БЕЗ ЗАДЕРЖКИ, ЧТОБЫ НЕ БЫЛО СКАЧКОВ
             _sync_body_height()
+            
+            # Применяем текущее состояние скрытия/отображения итогов
+            self._apply_results_visibility()
 
         finally:
             self._loading = False
@@ -1851,9 +2004,9 @@ class TimesheetTab(BoxLayout):
         values = [c.input.text for c in cells]
         night_on = self._emp_night.get(emp_id, False)
         overtime_on = self._emp_overtime.get(emp_id, False)
-        no_weekends_on = self._emp_no_weekends.get(emp_id, False) # <--- ДОБАВЛЕНО
+        no_weekends_on = self._emp_no_weekends.get(emp_id, False)
         
-        res = analyze_row(values, self._day_types, night_on, no_weekends_on) # <--- ДОБАВЛЕН 4-й АРГУМЕНТ
+        res = analyze_row(values, self._day_types, night_on, no_weekends_on)
 
         if overtime_on:
             apply_overtime(res, self._get_norm_hours())

@@ -6,6 +6,17 @@ os.environ['KIVY_GL_BACKEND'] = 'angle_sdl2'
 import sys
 import ctypes
 
+# --- ЗАЩИТА ОТ ПОВТОРНОГО ЗАПУСКА EXE ---
+if getattr(sys, 'frozen', False) and sys.platform == 'win32':
+    try:
+        mutex_name = "TabelAppMutex_1_1_7"
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+        if ctypes.windll.kernel32.GetLastError() == 183: # 183 = ERROR_ALREADY_EXISTS
+            sys.exit(0)
+    except Exception:
+        pass
+# ----------------------------------------
+
 if sys.platform == 'win32':
     try:
         myappid = 'londimain.workschedule.tabel.1.0'
@@ -39,7 +50,7 @@ from kivy.graphics import Color, Rectangle
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.textinput import TextInput
-from kivy.uix.button import Button
+from ui_widgets import HoverButton as Button
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelItem
@@ -57,6 +68,7 @@ from tab_timesheet import TimesheetTab
 from tab_report import ReportTab
 from tab_about import AboutTab
 from ui_helpers import bind_enter_key
+from ui_widgets import HoverButton  # <--- ДОБАВИТЬ
 
 TOPBAR_H    = dp(52)
 EXIT_BTN_W  = dp(120)
@@ -102,28 +114,54 @@ class TabelApp(App):
         from config import THEME_LABELS, CURRENT_THEME
         current = CURRENT_THEME
 
-        content = BoxLayout(orientation='vertical', spacing=8, padding=10)
-        theme_buttons = {}
+        # Уменьшаем внутренние отступы и задаем компактную ширину
+        content = BoxLayout(orientation='vertical', spacing=8, padding=(20, 15, 20, 15))
+        
+        # Верхняя распорка для центрирования
+        content.add_widget(Widget(size_hint_y=1))
 
+        theme_buttons = {}
         for key, label in THEME_LABELS.items():
-            mark = '● ' if key == current else '   '
-            btn = Button(
-                text=mark + label,
+            is_current = (key == current)
+            
+            # Если тема текущая - берем оранжевый цвет, иначе темно-серый
+            bg_color = config.ACTIVE_DEPT_BAR_BG if is_current else (0.20, 0.20, 0.24, 1)
+            fg_color = config.ACTIVE_DEPT_BAR_FG if is_current else (1, 1, 1, 1)
+            
+            btn = HoverButton(
+                text=label,  # Убрали символ '● '
                 size_hint_y=None, height=dp(44),
                 font_name=FONT_NAME, font_size=dp(15),
-                bold=(key == current),
-                color=(1, 1, 1, 1),
+                bold=is_current,
+                color=fg_color,
+                background_normal='',
+                background_color=bg_color
             )
             theme_buttons[key] = btn
             content.add_widget(btn)
 
-        close_btn = Button(text="Отмена", size_hint_y=None, height=dp(40),
-                           color=(1, 1, 1, 1), font_name=FONT_NAME,
-                           font_size=dp(16), bold=True)
+        # Отступ перед кнопкой Отмена
+        content.add_widget(Widget(size_hint_y=None, height=dp(10)))
+
+        # Кнопка Отмена с фиксированным красным цветом
+        close_btn = HoverButton(
+            text="Отмена", 
+            size_hint_y=None, height=dp(44),
+            color=(1, 1, 1, 1), 
+            font_name=FONT_NAME,
+            font_size=dp(16), 
+            bold=True,
+            background_normal='',
+            background_color=(0.75, 0.25, 0.25, 1) # Темно-красный
+        )
         content.add_widget(close_btn)
 
+        # Нижняя распорка для центрирования
+        content.add_widget(Widget(size_hint_y=1))
+
+        # Фиксированные размеры, чтобы кнопки всегда помещались
         popup = Popup(title="Тема оформления", content=content,
-                      size_hint=(0.42, 0.55),
+                      size_hint=(None, None), size=(dp(350), dp(420)),
                       title_color=LABEL_LIGHT, title_font=FONT_NAME,
                       auto_dismiss=False)
 
@@ -263,19 +301,79 @@ class TabelApp(App):
         top_bar.bind(pos=lambda i, v, r=_bar_rect: setattr(r, 'pos', v),
                      size=lambda i, v, r=_bar_rect: setattr(r, 'size', v))
 
-        total_right_w = THEME_BTN_W + EXIT_BTN_W + dp(6)
-        left_spacer = Widget(size_hint_x=None, width=total_right_w)
-        top_bar.add_widget(left_spacer)
+        # ==========================================
+        # БЛОК ДЛЯ ДИРЕКТОРА И ОРГАНИЗАЦИИ (слева, по центру)
+        # ==========================================
+        fields_box = BoxLayout(orientation='horizontal', spacing=12, 
+                               size_hint=(None, 1), width=dp(680))
 
-        title_lbl = Label(text=base_title,
-                          halign='center', valign='middle',
-                          font_name=FONT_NAME, font_size=dp(17), bold=True,
-                          color=LABEL_LIGHT,
-                          size_hint_x=1)
-        title_lbl.bind(size=lambda i, v: setattr(i, 'text_size', v))
-        top_bar.add_widget(title_lbl)
+        # Директор
+        dir_anchor = AnchorLayout(anchor_x='left', anchor_y='center', 
+                                  size_hint=(None, 1), width=dp(320))
+        dir_row = BoxLayout(size_hint=(None, None), size=(dp(320), dp(30)), spacing=6)
+        
+        dir_lbl = Label(text="Директор:", color=LABEL_LIGHT,
+                        font_name=FONT_NAME, font_size=dp(14),
+                        size_hint_x=None, width=dp(75),
+                        halign='right', valign='middle')
+        dir_lbl.bind(size=lambda i, v: setattr(i, 'text_size', v))
+        
+        director_wrap = TextInput(
+            text=self.data.get('director_name', DEFAULT_DIRECTOR),
+            multiline=False,
+            font_size=dp(14), font_name=FONT_NAME,
+            foreground_color=(0.05, 0.05, 0.05, 1),
+            background_color=(1, 1, 1, 1),
+            cursor_color=(0.10, 0.30, 0.70, 1),
+            cursor_width=dp(2),
+            selection_color=(0.20, 0.45, 0.90, 0.40),
+            padding=[dp(8), dp(7), dp(8), dp(7)],
+            size_hint=(None, None), size=(dp(235), dp(30)),
+        )
+        director_wrap.bind(text=self._on_director_change)
+        
+        dir_row.add_widget(dir_lbl)
+        dir_row.add_widget(director_wrap)
+        dir_anchor.add_widget(dir_row)
+        fields_box.add_widget(dir_anchor)
 
-        right_box = BoxLayout(size_hint_x=None, width=total_right_w,
+        # Организация
+        org_anchor = AnchorLayout(anchor_x='left', anchor_y='center', 
+                                  size_hint=(None, 1), width=dp(340))
+        org_row = BoxLayout(size_hint=(None, None), size=(dp(340), dp(30)), spacing=6)
+        
+        org_lbl = Label(text="Организация:", color=LABEL_LIGHT,
+                        font_name=FONT_NAME, font_size=dp(14),
+                        size_hint_x=None, width=dp(95),
+                        halign='right', valign='middle')
+        org_lbl.bind(size=lambda i, v: setattr(i, 'text_size', v))
+        
+        org_wrap = TextInput(
+            text=self.data.get('organization', DEFAULT_ORG),
+            multiline=False,
+            font_size=dp(14), font_name=FONT_NAME,
+            foreground_color=(0.05, 0.05, 0.05, 1),
+            background_color=(1, 1, 1, 1),
+            cursor_color=(0.10, 0.30, 0.70, 1),
+            cursor_width=dp(2),
+            selection_color=(0.20, 0.45, 0.90, 0.40),
+            padding=[dp(8), dp(7), dp(8), dp(7)],
+            size_hint=(None, None), size=(dp(235), dp(30)),
+        )
+        org_wrap.bind(text=self._on_org_change)
+        
+        org_row.add_widget(org_lbl)
+        org_row.add_widget(org_wrap)
+        org_anchor.add_widget(org_row)
+        fields_box.add_widget(org_anchor)
+
+        self.director_wrap = director_wrap
+        self.org_wrap = org_wrap
+
+        top_bar.add_widget(fields_box)
+        top_bar.add_widget(Widget()) # Распорка, прижимающая кнопки вправо
+
+        right_box = BoxLayout(size_hint_x=None, width=THEME_BTN_W + EXIT_BTN_W + dp(6),
                               spacing=dp(6))
         
         theme_btn = Button(text="Тема",
@@ -337,108 +435,21 @@ class TabelApp(App):
         Clock.schedule_once(lambda *a: root_tabs.switch_to(emp_tab), 0.2)
         Clock.schedule_interval(self._check_external_updates, 3.0)
 
-        # ==========================================
-        # СОЗДАЕМ ЕДИНЫЙ БЛОК ДЛЯ ДИРЕКТОРА И ОРГАНИЗАЦИИ
-        # ==========================================
-        fields_box = BoxLayout(orientation='vertical', spacing=4, 
-                               size_hint=(None, None), 
-                               width=dp(390), height=dp(70))
-
-        # Ряд 1: Директор
-        dir_row = BoxLayout(size_hint_y=None, height=dp(32), spacing=8)
-        
-        dir_lbl_holder = AnchorLayout(anchor_x='right', anchor_y='center',
-                                       size_hint_x=None, width=dp(100))
-        dir_lbl_holder.add_widget(Label(
-            text="Директор:", color=LABEL_LIGHT,
-            font_name=FONT_NAME, font_size=dp(14),
-            size_hint=(None, None), size=(dp(100), dp(20)),
-            halign='right', valign='middle',
-            text_size=(dp(100), dp(20))))
-        dir_row.add_widget(dir_lbl_holder)
-
-        director_wrap = TextInput(
-            text=self.data.get('director_name', DEFAULT_DIRECTOR),
-            multiline=False,
-            font_size=dp(14), font_name=FONT_NAME,
-            foreground_color=(0.05, 0.05, 0.05, 1),
-            background_color=(1, 1, 1, 1),
-            cursor_color=(0.10, 0.30, 0.70, 1),
-            cursor_width=dp(2),
-            selection_color=(0.20, 0.45, 0.90, 0.40),
-            padding=[dp(8), dp(7), dp(8), dp(7)],
-            size_hint=(None, None),
-            size=(dp(280), dp(30)),
-        )
-        director_wrap.bind(text=self._on_director_change)
-        dir_row.add_widget(director_wrap)
-        fields_box.add_widget(dir_row)
-
-        # Ряд 2: Организация
-        org_row = BoxLayout(size_hint_y=None, height=dp(32), spacing=8)
-        
-        org_lbl_holder = AnchorLayout(anchor_x='right', anchor_y='center',
-                                       size_hint_x=None, width=dp(100))
-        org_lbl_holder.add_widget(Label(
-            text="Организация:", color=LABEL_LIGHT,
-            font_name=FONT_NAME, font_size=dp(14),
-            size_hint=(None, None), size=(dp(100), dp(20)),
-            halign='right', valign='middle',
-            text_size=(dp(100), dp(20))))
-        org_row.add_widget(org_lbl_holder)
-
-        org_wrap = TextInput(
-            text=self.data.get('organization', DEFAULT_ORG),
-            multiline=False,
-            font_size=dp(14), font_name=FONT_NAME,
-            foreground_color=(0.05, 0.05, 0.05, 1),
-            background_color=(1, 1, 1, 1),
-            cursor_color=(0.10, 0.30, 0.70, 1),
-            cursor_width=dp(2),
-            selection_color=(0.20, 0.45, 0.90, 0.40),
-            padding=[dp(8), dp(7), dp(8), dp(7)],
-            size_hint=(None, None),
-            size=(dp(280), dp(30)),
-        )
-        org_wrap.bind(text=self._on_org_change)
-        org_row.add_widget(org_wrap)
-        fields_box.add_widget(org_row)
-
-        self.director_wrap = director_wrap
-        self.org_wrap = org_wrap
-
-        tabs_wrapper = FloatLayout()
-        tabs_wrapper.add_widget(root_tabs)
-        tabs_wrapper.add_widget(fields_box)
-
-        def _place_director(*_):
-            # Привязываем блок полей к верхнему правому углу
-            fields_box.right = tabs_wrapper.right - dp(10)
-            fields_box.top = tabs_wrapper.top - dp(2)
-
-        tabs_wrapper.bind(pos=_place_director, size=_place_director)
-        Clock.schedule_once(_place_director, 0)
-        Clock.schedule_once(_place_director, 0.2)
-        Clock.schedule_once(_place_director, 0.6)
-
         def _update_director_visibility(*_):
             try:
                 cur = root_tabs.current_tab
                 show = cur is not None and cur.text == "Рабочий персонал"
             except Exception:
                 show = False
-            # Скрываем весь блок при переходе на другие вкладки
             fields_box.opacity = 1 if show else 0
             fields_box.disabled = not show
 
         root_tabs.bind(current_tab=_update_director_visibility)
         Clock.schedule_once(_update_director_visibility, 0.05)
-        Clock.schedule_once(_update_director_visibility, 0.3)
-        Clock.schedule_once(_update_director_visibility, 0.6)
 
         root = BoxLayout(orientation='vertical')
         root.add_widget(top_bar)
-        root.add_widget(tabs_wrapper)
+        root.add_widget(root_tabs)
         return root
 
     def confirm_exit(self):
@@ -464,30 +475,19 @@ class TabelApp(App):
                       auto_dismiss=False)
 
         def do_exit(*a):
-            import threading, time, os
-            
-            # Сохраняем данные и закрываем программу в отдельном потоке
-            def _save_and_exit():
-                try:
-                    self.ts_tab._save_for_key(self.ts_tab._get_key())
-                except Exception:
-                    pass
-                try:
-                    save_data(self.data)
-                except Exception:
-                    pass
-                # Даем файлу немного времени на запись и убиваем процесс
-                time.sleep(0.2)
-                os._exit(0)
-                
-            # Запускаем поток
-            threading.Thread(target=_save_and_exit, daemon=True).start()
-            
-            # Сразу закрываем попап, чтобы пользователь видел, что программа отреагировала
             try:
                 popup.dismiss()
             except Exception:
                 pass
+            try:
+                self.ts_tab._save_for_key(self.ts_tab._get_key())
+            except Exception:
+                pass
+            try:
+                save_data(self.data)
+            except Exception:
+                pass
+            self.stop()
 
         yes.bind(on_press=do_exit)
         no.bind(on_press=popup.dismiss)

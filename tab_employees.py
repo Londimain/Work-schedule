@@ -11,7 +11,6 @@ from kivy.graphics import Color, Rectangle
 from kivy.metrics import dp
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.button import Button
 from kivy.uix.checkbox import CheckBox
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
@@ -19,28 +18,30 @@ from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 from kivy.uix.textinput import TextInput
+from kivy.uix.button import Button
+from ui_widgets import CenteredSpinner, HoverButton
 
 from config import (FONT_NAME, LABEL_LIGHT, DEFAULT_POSITIONS,
                     DEFAULT_DEPARTMENTS, DEFAULT_ORG,
                     DEPT_BAR_BG, DEPT_BAR_FG,
                     DEFAULT_ENERGETIC, DELETE_PASSWORD)
 from data_utils import (save_data, set_show_in_timesheet,
-                        save_local_order)
+                        save_local_order, get_local_collapsed_depts, 
+                        save_local_collapsed_depts) 
 from ui_helpers import (add_bottom_border, add_top_border,
                         add_left_border, add_right_border, vsep,
                         NoOverscrollEffect, ask_password_and_run,
                         bind_enter_key)
-from ui_widgets import CenteredSpinner
-
 
 # ---------------------------------------------------------------------------
 class RightClickBox(BoxLayout):
     SELECT_COLOR = (1.00, 0.72, 0.10, 1)
     SELECT_TH = 3
 
-    def __init__(self, on_right_click=None, **kwargs):
+    def __init__(self, on_right_click=None, on_left_click=None, **kwargs):
         super().__init__(**kwargs)
         self._on_right_click = on_right_click
+        self._on_left_click = on_left_click  
         self._selected = False
         self._sel_top = None
         self._sel_bottom = None
@@ -87,14 +88,21 @@ class RightClickBox(BoxLayout):
         self._sel_right.size = (t, h)
 
     def on_touch_down(self, touch):
-        if (getattr(touch, 'button', None) == 'right'
-                and self.collide_point(*touch.pos)):
-            if self._on_right_click is not None:
-                try:
-                    self._on_right_click(touch)
-                except Exception as e:
-                    print("Right-click handler error:", e)
-            return True
+        if self.collide_point(*touch.pos):
+            if getattr(touch, 'button', None) == 'right':
+                if self._on_right_click is not None:
+                    try:
+                        self._on_right_click(touch)
+                    except Exception as e:
+                        print("Right-click handler error:", e)
+                return True
+            elif getattr(touch, 'button', None) == 'left':
+                if self._on_left_click is not None:
+                    try:
+                        self._on_left_click(touch)
+                        return True  # <--- Возвращаем True, чтобы событие не шло дальше в ScrollView
+                    except Exception as e:
+                        print("Left-click handler error:", e)
         return super().on_touch_down(touch)
 
 
@@ -102,6 +110,7 @@ class EmployeesTab(BoxLayout):
     def __init__(self, app, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
         self.app = app
+        self._collapsed_depts = get_local_collapsed_depts() 
         
         with self.canvas.before:
             Color(*config.TABLE_BG)
@@ -169,7 +178,8 @@ class EmployeesTab(BoxLayout):
             color=LABEL_LIGHT, halign='center',
             font_name=FONT_NAME, font_size=dp(15),
             outline_color=(0, 0, 0, 1), outline_width=1))
-        btn = Button(text="OK", size_hint_y=None, height=dp(40),
+        
+        btn = HoverButton(text="OK", size_hint_y=None, height=dp(40),
                      font_name=FONT_NAME, font_size=dp(16),
                      background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1))
         content.add_widget(btn)
@@ -511,6 +521,9 @@ class EmployeesTab(BoxLayout):
             bar._on_right_click = (
                 lambda t, n=name, w=bar: self._show_department_menu(n, t, w)
             )
+            bar._on_left_click = ( 
+                lambda t, n=name: self._toggle_dept_collapse(n)
+            )
         else:
             bar = BoxLayout(size_hint_y=None, height=dp(30),
                             padding=(0, 0, 0, 0))
@@ -521,6 +534,7 @@ class EmployeesTab(BoxLayout):
         bar.bind(pos=lambda i, v, r=rect: setattr(r, 'pos', v),
                  size=lambda i, v, r=rect: setattr(r, 'size', v))
 
+        # Символы [+] и [-] убраны, отображается только название отдела
         lbl = Label(text=name, color=DEPT_BAR_FG,
                     font_name=FONT_NAME, font_size=dp(15),
                     halign='center', valign='middle')
@@ -564,21 +578,55 @@ class EmployeesTab(BoxLayout):
         departments = self.app.data.get('departments', [])
         employees = self.app.data['employees']
         used = set()
+        
+        first_dept = True
         for dept in departments:
             idxs = [i for i, e in enumerate(employees)
                     if e.get('department', '') == dept]
             if not idxs:
                 continue
-            self._add_dept_bar(dept, movable=True)
+                
+            if not first_dept:
+                self.list_layout.add_widget(Widget(size_hint_y=None, height=dp(8)))
+            first_dept = False
+            
+            has_checked = any(employees[i].get('show_in_timesheet', False) for i in idxs)
+            
+            if has_checked:
+                bg = config.ACTIVE_DEPT_BAR_BG
+                fg = config.ACTIVE_DEPT_BAR_FG
+                name = dept  # <--- Убрали звездочку
+            else:
+                bg = config.DEPT_BAR_BG
+                fg = config.DEPT_BAR_FG
+                name = dept
+                
+            self._add_dept_bar(name, bg=bg, fg=fg, movable=True, raw_name=dept)
+            
+            if dept in self._collapsed_depts:
+                continue 
+                
             for num, i in enumerate(idxs, start=1):
                 self._add_employee_row(i, employees[i], num)
                 used.add(i)
-        others = [i for i in range(len(employees)) if i not in used]
+        
+        others = [i for i in range(len(employees)) if i not in used and employees[i].get('department', '') not in departments]
         if others:
             if departments:
-                self._add_dept_bar("Без отдела",
-                                   bg=(0.30, 0.30, 0.34, 1),
-                                   movable=False)
+                self.list_layout.add_widget(Widget(size_hint_y=None, height=dp(8)))
+                
+                has_checked_others = any(employees[i].get('show_in_timesheet', False) for i in others)
+                if has_checked_others:
+                    bg_others = config.ACTIVE_DEPT_BAR_BG
+                    fg_others = config.ACTIVE_DEPT_BAR_FG
+                    name_others = "Без отдела"  # <--- Убрали звездочку
+                else:
+                    bg_others = (0.30, 0.30, 0.34, 1)
+                    fg_others = config.DEPT_BAR_FG
+                    name_others = "Без отдела"
+                    
+                self._add_dept_bar(name_others, bg=bg_others, fg=fg_others, movable=False, raw_name="Без отдела")
+                
             for num, i in enumerate(others, start=1):
                 self._add_employee_row(i, employees[i], num)
 
@@ -698,11 +746,11 @@ class EmployeesTab(BoxLayout):
         outer.add_widget(Widget())
 
         btns = BoxLayout(size_hint_y=None, height=dp(50), spacing=10)
-        save_btn = Button(text="Сохранить",
+        save_btn = HoverButton(text="Сохранить",
                           background_color=(0.3, 0.7, 0.3, 1),
                           color=(1, 1, 1, 1), font_name=FONT_NAME,
                           font_size=dp(16), bold=True)
-        cancel_btn = Button(text="Отмена", color=(1, 1, 1, 1),
+        cancel_btn = HoverButton(text="Отмена", color=(1, 1, 1, 1),
                             font_name=FONT_NAME, font_size=dp(16), bold=True)
         btns.add_widget(save_btn)
         btns.add_widget(cancel_btn)
@@ -785,22 +833,31 @@ class EmployeesTab(BoxLayout):
         list_grid.bind(minimum_height=list_grid.setter('height'))
 
         def toggle_night(name):
-            flags = self.app.data.setdefault('night_flags', {})
-            flags[name] = not flags.get(name, False)
-            save_data(self.app.data)
-            rebuild_list()
+            rebuild_list() # Сбрасываем визуальное состояние чекбокса
+            def _do():
+                flags = self.app.data.setdefault('night_flags', {})
+                flags[name] = not flags.get(name, False)
+                save_data(self.app.data)
+                rebuild_list()
+            ask_password_and_run(DELETE_PASSWORD, _do, description=f"Изменить настройку «Ночные» для\n«{name}»?")
 
         def toggle_overtime(name):
-            flags = self.app.data.setdefault('overtime_flags', {})
-            flags[name] = not flags.get(name, False)
-            save_data(self.app.data)
             rebuild_list()
+            def _do():
+                flags = self.app.data.setdefault('overtime_flags', {})
+                flags[name] = not flags.get(name, False)
+                save_data(self.app.data)
+                rebuild_list()
+            ask_password_and_run(DELETE_PASSWORD, _do, description=f"Изменить настройку «Сверхурочные» для\n«{name}»?")
 
-        def toggle_no_weekends(name):  # <--- ДОБАВЛЕНО
-            flags = self.app.data.setdefault('no_weekends_flags', {})
-            flags[name] = not flags.get(name, False)
-            save_data(self.app.data)
+        def toggle_no_weekends(name):
             rebuild_list()
+            def _do():
+                flags = self.app.data.setdefault('no_weekends_flags', {})
+                flags[name] = not flags.get(name, False)
+                save_data(self.app.data)
+                rebuild_list()
+            ask_password_and_run(DELETE_PASSWORD, _do, description=f"Изменить настройку «Без вых.» для\n«{name}»?")
 
         def delete_pos(ii):
             name = self.app.data['positions'][ii]
@@ -1039,18 +1096,20 @@ class EmployeesTab(BoxLayout):
         header.add_widget(h_num)
         header.add_widget(vsep(color=LABEL_LIGHT))
         
-        h_dept = Label(text="Название отдела", bold=True, size_hint_x=2.2, color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='left', valign='middle')
-        h_dept.bind(size=lambda i, v: setattr(i, 'text_size', (v[0] - dp(10), v[1])))
+        # ... выше идет h_num ...
+        
+        h_dept = Label(text="Название отдела", bold=True, size_hint_x=2.2, color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='center', valign='middle')
+        h_dept.bind(size=lambda i, v: setattr(i, 'text_size', (v[0], v[1]))) # Убрали -dp(10) для точного центрирования
         header.add_widget(h_dept)
         header.add_widget(vsep(color=LABEL_LIGHT))
         
-        h_pos = Label(text="Должность", bold=True, size_hint_x=1.8, color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='left', valign='middle')
-        h_pos.bind(size=lambda i, v: setattr(i, 'text_size', (v[0] - dp(10), v[1])))
+        h_pos = Label(text="Должность", bold=True, size_hint_x=1.8, color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='center', valign='middle')
+        h_pos.bind(size=lambda i, v: setattr(i, 'text_size', (v[0], v[1])))
         header.add_widget(h_pos)
         header.add_widget(vsep(color=LABEL_LIGHT))
         
-        h_fio = Label(text="Фамилия Имя Отчество", bold=True, size_hint_x=2.5, color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='left', valign='middle')
-        h_fio.bind(size=lambda i, v: setattr(i, 'text_size', (v[0] - dp(10), v[1])))
+        h_fio = Label(text="Фамилия Имя Отчество", bold=True, size_hint_x=2.5, color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='center', valign='middle')
+        h_fio.bind(size=lambda i, v: setattr(i, 'text_size', (v[0], v[1])))
         header.add_widget(h_fio)
         header.add_widget(vsep(color=LABEL_LIGHT))
         
@@ -1534,3 +1593,43 @@ class EmployeesTab(BoxLayout):
                       title_font=FONT_NAME, auto_dismiss=False)
         close_btn.bind(on_press=popup.dismiss)
         popup.open()
+        
+    def _toggle_dept_collapse(self, name):
+        if name in self._collapsed_depts:
+            self._collapsed_depts.remove(name)
+        else:
+            self._collapsed_depts.append(name)
+        save_local_collapsed_depts(self._collapsed_depts)
+        self.refresh()
+
+    def _add_dept_bar(self, name, bg=DEPT_BAR_BG, fg=DEPT_BAR_FG, movable=True, raw_name=None):
+        if raw_name is None:
+            raw_name = name
+
+        if movable:
+            bar = RightClickBox(size_hint_y=None, height=dp(30),
+                                padding=(0, 0, 0, 0))
+            bar._on_right_click = (
+                lambda t, n=raw_name, w=bar: self._show_department_menu(n, t, w)
+            )
+            bar._on_left_click = ( 
+                lambda t, n=raw_name: self._toggle_dept_collapse(n)
+            )
+        else:
+            bar = BoxLayout(size_hint_y=None, height=dp(30),
+                            padding=(0, 0, 0, 0))
+
+        with bar.canvas.before:
+            Color(*bg)
+            rect = Rectangle(pos=bar.pos, size=bar.size)
+        bar.bind(pos=lambda i, v, r=rect: setattr(r, 'pos', v),
+                 size=lambda i, v, r=rect: setattr(r, 'size', v))
+
+        lbl = Label(text=name, color=fg,
+                    font_name=FONT_NAME, font_size=dp(15),
+                    bold=True, # Жирный шрифт для лучшей читаемости
+                    halign='center', valign='middle')
+        lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+        bar.add_widget(lbl)
+
+        self.list_layout.add_widget(bar)

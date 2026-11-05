@@ -47,6 +47,27 @@ def save_local(local):
     except Exception as e:
         print("Ошибка сохранения локальных настроек:", e)
 
+def set_local_show_legend(value):
+    """Сохраняет выбор отображения условных обозначений для этого компьютера."""
+    local = load_local()
+    local['show_legend'] = bool(value)
+    save_local(local)
+
+def get_local_show_legend():
+    """Возвращает сохранённый выбор отображения условных обозначений."""
+    local = load_local()
+    return bool(local.get('show_legend', False))
+
+def set_local_results_hidden(value):
+    """Сохраняет состояние видимости итогов для этого компьютера."""
+    local = load_local()
+    local['results_hidden'] = bool(value)
+    save_local(local)
+
+def get_local_results_hidden():
+    """Возвращает сохраненное состояние видимости итогов."""
+    local = load_local()
+    return bool(local.get('results_hidden', False))
 
 def set_show_in_timesheet(emp_id, value):
     """Сохраняет галочку «В таблицу» только для этого компьютера."""
@@ -76,7 +97,17 @@ def save_local_order(departments, employees):
     ]
     save_local(local)
 
+def get_local_collapsed_depts():
+    """Возвращает список свернутых отделов для этого компьютера."""
+    local = load_local()
+    return local.get('collapsed_depts', [])
 
+def save_local_collapsed_depts(depts):
+    """Сохраняет список свернутых отделов для этого компьютера."""
+    local = load_local()
+    local['collapsed_depts'] = list(depts)
+    save_local(local)
+    
 def apply_local_overrides(data):
     """Накладывает локальный выбор «В таблицу» поверх общих данных."""
     first_run = not os.path.exists(LOCAL_FILE)
@@ -327,16 +358,16 @@ def analyze_row(values, day_types, night_enabled=False,
         except ValueError:
             continue
 
+# data_utils.py (фрагмент функции analyze_row)
         dt = day_types[i] if i < len(day_types) else 'work'
         # Только реальные праздники дают часы в колонку «праздничные».
-        # Работа в выходной день сюда НЕ попадает — одинаково для всех.
         if dt == 'holiday':
             res['праздничные'] += h
         elif dt == 'weekend':
-            res['_выходные_часы'] += h   # для исключения из сверхурочных
             if not no_weekends:
-                res['выходные_часы'] += h # Для отображения в новой колонке
-
+                res['_выходные_часы'] += h   # исключаем из сверхурочных
+                res['выходные_часы'] += h    # Для отображения в колонке
+            
         res['явки'] += 1
         res['часы'] += h
 
