@@ -337,40 +337,37 @@ class TimesheetTab(BoxLayout):
             self.right_header.width = w
             self.right_header.opacity = 0 if hidden else 1
             
-        # Пересчет ширины колонок дней месяца
-        if getattr(self, 'LEFT_W', 0) and self._days_in_month > 0:
-            # Учитываем отступы контейнера (по 10dp с каждой стороны)
-            avail_w = self.width - dp(20) - self.LEFT_W - w 
-            new_w_day = max(dp(46), int(avail_w / self._days_in_month))
-            
-            for hdr in getattr(self, '_all_day_headers', []):
-                hdr.width = new_w_day
-            for row in getattr(self, '_all_day_rows', []):
-                row.width = self._days_in_month * new_w_day
-                for child in row.children:
-                    if hasattr(child, 'width'):
-                        child.width = new_w_day
-                        
-            # БЫЛО:
-            # if getattr(self, '_days_grid', None) is not None:
-            #     self._days_grid.width = self._days_in_month * new_w_day
-
-            # СТАЛО:
-            if getattr(self, '_days_grid', None) is not None:
-                # Так как мы привязали width к minimum_width в load_timesheet,
-                # нам достаточно обновить ширину дочерних элементов (строк и ячеек).
-                # GridLayout сам подстроит свою ширину под них.
-                pass
+            # Пересчет ширины колонок дней месяца
+            if getattr(self, 'LEFT_W', 0) and self._days_in_month > 0:
+                avail_w = self.width - dp(20) - self.LEFT_W - w 
+                new_w_day = max(dp(46), int(avail_w / self._days_in_month))
                 
-            if getattr(self, '_dh', None) is not None:
-                self._dh.width = self._days_in_month * new_w_day
-            
-            self.W_DAY = new_w_day
-            
-            # --- НОВЫЙ КОД: Сброс прокрутки в 0, если всё помещается ---
-            if getattr(self, '_days_sv', None) is not None and getattr(self, '_days_grid', None) is not None:
-                if self._days_grid.width <= self._days_sv.width:
-                    self._days_sv.scroll_x = 0
+                calc_grid_w = self._days_in_month * new_w_day
+                # Если таблица уже, чем экран, растягиваем её до краев, чтобы линии были ровными
+                actual_grid_w = calc_grid_w
+                if getattr(self, '_days_sv', None) is not None:
+                    actual_grid_w = max(calc_grid_w, self._days_sv.width)
+                
+                for hdr in getattr(self, '_all_day_headers', []):
+                    hdr.width = new_w_day
+                    
+                for row in getattr(self, '_all_day_rows', []):
+                    row.width = actual_grid_w  # <--- Тянем строку на всю ширину
+                    for child in row.children:
+                        if hasattr(child, 'width'):
+                            child.width = new_w_day
+                            
+                if getattr(self, '_days_grid', None) is not None:
+                    self._days_grid.width = actual_grid_w
+                    
+                if getattr(self, '_dh', None) is not None:
+                    self._dh.width = actual_grid_w
+                
+                self.W_DAY = new_w_day
+                
+                if getattr(self, '_days_sv', None) is not None and getattr(self, '_days_grid', None) is not None:
+                    if self._days_grid.width <= self._days_sv.width:
+                        self._days_sv.scroll_x = 0
             # -----------------------------------------------------------
             
         if self._sync_body_height:
@@ -1735,7 +1732,36 @@ class TimesheetTab(BoxLayout):
                 dh.add_widget(day_hdr)
             add_bottom_border(dh, color=BORDER_BLACK, thickness=LINE_T)
             days_head_container.add_widget(dh)
+            # Контейнер для шапки дней
+            days_head_container = StencilView(size_hint=(1, 1))
+            dh = BoxLayout(size_hint=(None, None), size=(DAYS_W, HEAD_BOT_H),
+                           spacing=0)
+            self._dh = dh
+            for i, dt in enumerate(day_types):
+                wd_idx = date(y, m, i + 1).weekday()
+                day_hdr = DayHeader(i + 1, day_type=dt,
+                                         weekday_idx=wd_idx,
+                                         show_right=True,
+                                         size_hint=(None, None),
+                                         size=(W_DAY, HEAD_BOT_H))
+                self._all_day_headers.append(day_hdr)
+                dh.add_widget(day_hdr)
+            add_bottom_border(dh, color=BORDER_BLACK, thickness=LINE_T)
+            days_head_container.add_widget(dh)
 
+            # --- НОВЫЙ КОД: Прокрутка колесиком мыши при наведении на шапку с датами ---
+            def _on_header_touch(inst, touch):
+                if touch.is_mouse_scrolling:
+                    step = 0.05
+                    if touch.button == 'scrollup':
+                        days_sv.scroll_x = max(0.0, days_sv.scroll_x - step)
+                    else:
+                        days_sv.scroll_x = min(1.0, days_sv.scroll_x + step)
+                    return True  # Событие поглощено
+                return False
+            
+            dh.bind(on_touch_down=_on_header_touch)
+            # -----------------------------------------------------------------------------
             rh_box = BoxLayout(size_hint=(None, 1), width=RIGHT_W, spacing=0)
             self.right_header = rh_box # СОХРАНЯЕМ ССЫЛКУ
             for i, (label, key_, w) in enumerate(RIGHT_COLUMNS):
@@ -1802,13 +1828,12 @@ class TimesheetTab(BoxLayout):
             self._days_sv = days_sv
             # БЫЛО:
             # days_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
-            # days_grid.width = DAYS_W  # <--- Явно задаем ширину вместо bind
+            # days_grid.bind(minimum_width=days_grid.setter('width'))
             # _stretch_grid(days_grid, days_sv)
 
             # СТАЛО:
             days_grid = GridLayout(cols=1, size_hint=(None, None), spacing=0)
-            # Привязываем ширину к minimum_width, чтобы GridLayout точно соответствовал содержимому
-            days_grid.bind(minimum_width=days_grid.setter('width'))
+            days_grid.width = DAYS_W  # <--- Явно задаем ширину
             _stretch_grid(days_grid, days_sv)
             self._days_grid = days_grid
 

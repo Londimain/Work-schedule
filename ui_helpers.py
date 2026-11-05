@@ -151,14 +151,23 @@ class SmartScrollView(ScrollView):
 class HorizontalScrollView(SmartScrollView):
     def on_scroll_start(self, touch, check_children=True):
         if 'button' in touch.profile and touch.button in ('scrollup', 'scrolldown'):
+            # Если контент полностью помещается на экране — блокируем прокрутку
+            if self.children and self.children[0].width <= self.width:
+                self.scroll_x = 0
+                return True
+            
             step = 0.05  # Плавный шаг
             if touch.button == 'scrollup':
                 self.scroll_x = max(0.0, self.scroll_x - step)
             else:
                 self.scroll_x = min(1.0, self.scroll_x + step)
-            
-            # Возвращаем True, чтобы событие прокрутки не передавалось дальше 
-            # и не вызывало случайную вертикальную прокрутку (scroll_y)
+                
+            # Жестко прилипаем к краям, чтобы не оставалось пустого места
+            if self.scroll_x < 0.01:
+                self.scroll_x = 0.0
+            elif self.scroll_x > 0.99:
+                self.scroll_x = 1.0
+                
             return True
             
         return super().on_scroll_start(touch, check_children)
