@@ -156,7 +156,7 @@ class HorizontalScrollView(SmartScrollView):
                 self.scroll_x = 0
                 return True
             
-            step = 0.05  # Плавный шаг
+            step = 0.15  # <--- УВЕЛИЧИЛИ ШАГ С 0.05 ДО 0.15
             if touch.button == 'scrollup':
                 self.scroll_x = max(0.0, self.scroll_x - step)
             else:

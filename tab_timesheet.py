@@ -1752,7 +1752,7 @@ class TimesheetTab(BoxLayout):
             # --- НОВЫЙ КОД: Прокрутка колесиком мыши при наведении на шапку с датами ---
             def _on_header_touch(inst, touch):
                 if touch.is_mouse_scrolling:
-                    step = 0.05
+                    step = 0.15  # <--- УВЕЛИЧИЛИ ШАГ С 0.05 ДО 0.15
                     if touch.button == 'scrollup':
                         days_sv.scroll_x = max(0.0, days_sv.scroll_x - step)
                     else:

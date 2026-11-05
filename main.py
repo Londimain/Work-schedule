@@ -11,7 +11,17 @@ if getattr(sys, 'frozen', False) and sys.platform == 'win32':
     try:
         mutex_name = "TabelAppMutex_1_1_7"
         mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
-        if ctypes.windll.kernel32.GetLastError() == 183: # 183 = ERROR_ALREADY_EXISTS
+        
+        # 183 = ERROR_ALREADY_EXISTS
+        if ctypes.windll.kernel32.GetLastError() == 183: 
+            # Показываем системное окно Windows
+            ctypes.windll.user32.MessageBoxW(
+                0, 
+                "Программа «Табель учёта рабочего времени» уже запущена.\n\n"
+                "Пожалуйста, переключитесь на уже открытое окно программы.", 
+                "Внимание", 
+                0x00000040 | 0x00000000 # Иконка информации (i) и кнопка ОК
+            )
             sys.exit(0)
     except Exception:
         pass
