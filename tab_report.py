@@ -16,6 +16,7 @@ from kivy.uix.gridlayout import GridLayout
 from kivy.uix.popup import Popup
 from kivy.graphics import Color, Rectangle
 from kivy.clock import Clock
+from kivy.uix.behaviors import ButtonBehavior
 
 from config import (FONT_NAME, LABEL_LIGHT, MONTHS, YEARS, SPINNER_BG, SPINNER_FG, 
                     RIGHT_COLUMNS, DEFAULT_ORG, DEFAULT_ENERGETIC, DEFAULT_DIRECTOR)
@@ -27,9 +28,66 @@ from data_utils import (classify_day, analyze_row, apply_overtime, fmt_hours,
                         save_data)
 
 from ui_helpers import (NoOverscrollEffect, add_top_border, add_bottom_border,
-                        add_left_border, add_right_border, vsep)
+                        add_left_border, add_right_border, vsep, ask_password_and_run,
+                        bind_enter_key)
+from config import DELETE_PASSWORD
 from ui_widgets import HoverButton as Button, LightSpinnerOption
 from excel_export import export_full_excel, export_short_excel
+
+
+# --- СПЕЦИАЛЬНЫЙ КЛАСС ДЛЯ СТРОКИ ТАБЛИЦЫ ---
+class HoverClickableRow(ButtonBehavior, BoxLayout):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._hovering = False
+        with self.canvas.before:
+            self._bg_color = Color(0.15, 0.15, 0.18, 1)
+            self._bg_rect = Rectangle(pos=self.pos, size=self.size)
+            
+        self.bind(pos=self._update_rect, size=self._update_rect, state=self._on_state)
+        
+        from kivy.core.window import Window
+        Window.bind(mouse_pos=self._on_mouse_pos)
+        self.bind(parent=self._on_parent)
+
+    def _on_parent(self, instance, parent):
+        if parent is None:
+            from kivy.core.window import Window
+            try:
+                Window.unbind(mouse_pos=self._on_mouse_pos)
+            except Exception:
+                pass
+
+    def _update_rect(self, *a):
+        self._bg_rect.pos = self.pos
+        self._bg_rect.size = self.size
+
+    def _on_mouse_pos(self, window, pos):
+        if not self.get_root_window() or self.disabled:
+            return
+        try:
+            wx, wy = self.to_window(self.x, self.y)
+            if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
+                if not self._hovering:
+                    self._hovering = True
+                    self._update_bg()
+            else:
+                if self._hovering:
+                    self._hovering = False
+                    self._update_bg()
+        except Exception:
+            pass
+
+    def _on_state(self, inst, value):
+        self._update_bg()
+
+    def _update_bg(self):
+        if self._hovering or self.state == 'down':
+            self._bg_color.rgba = (0.30, 0.30, 0.35, 1) 
+        else:
+            self._bg_color.rgba = (0.15, 0.15, 0.18, 1)
+# -------------------------------------------------------------------------
+
 
 def format_name(name):
     if not name:
@@ -57,6 +115,46 @@ class ReportTab(BoxLayout):
 
         self._build()
         Clock.schedule_once(lambda *a: self.update_preview(), 0.3)
+        
+    def _migrate_signers_once(self):
+        """Одноразовая миграция: добавляет локальных подписантов в общую базу."""
+        try:
+            from data_storage import load_local, save_local
+            import json as _json
+
+            local = load_local()
+            if local.get('signers_migrated'):
+                return
+
+            local_signers = local.get('additional_signers', [])
+
+            if local_signers:
+                try:
+                    with open(config.DATA_FILE, 'r', encoding='utf-8') as f:
+                        disk_data = _json.load(f)
+                    if 'shared_signers' in disk_data:
+                        self.app.data['shared_signers'] = disk_data['shared_signers']
+                except Exception:
+                    pass
+
+                shared = self.app.data.setdefault('shared_signers', [])
+                shared_keys = {(sh.get('name', '').strip(),
+                                sh.get('position', '').strip()) for sh in shared}
+                added = False
+                for s in local_signers:
+                    n = (s.get('name') or '').strip()
+                    p = (s.get('position') or '').strip()
+                    if n and p and (n, p) not in shared_keys:
+                        shared.append({'name': n, 'position': p})
+                        shared_keys.add((n, p))
+                        added = True
+                if added:
+                    save_data(self.app.data)
+
+            local['signers_migrated'] = True
+            save_local(local)
+        except Exception as e:
+            print("Ошибка миграции подписантов:", e)
 
     def _on_org_change(self, inst, value):
         self.app.data['organization'] = value
@@ -73,7 +171,6 @@ class ReportTab(BoxLayout):
         Clock.schedule_once(lambda *a: self.update_preview(), 0.1)
 
     def _build(self):
-        # --- Строка 1: Период, Доп. подписанты, Условные обозначения, Экспорт ---
         top = BoxLayout(size_hint_y=None, height=dp(52), spacing=5, padding=5)
 
         top.add_widget(Label(text="Месяц:", size_hint_x=None, width=dp(70),
@@ -94,14 +191,13 @@ class ReportTab(BoxLayout):
 
         top.add_widget(Widget())
 
-        # Кнопка Доп. подписанты перенесена сюда
         signers_btn = Button(text="Доп. подписанты", size_hint_x=None, width=dp(180),
                              font_name=FONT_NAME, font_size=dp(14), bold=True,
                              background_color=(0.5, 0.4, 0.75, 1), color=(1, 1, 1, 1))
         signers_btn.bind(on_press=self.show_signers_popup)
         top.add_widget(signers_btn)
 
-        top.add_widget(Widget(size_hint_x=None, width=dp(15))) # Отступ
+        top.add_widget(Widget(size_hint_x=None, width=dp(15)))
 
         legend_box = BoxLayout(size_hint_x=None, width=dp(220), spacing=dp(4), padding=(0, 0, dp(10), 0))
         is_legend_on = get_local_show_legend()
@@ -126,7 +222,6 @@ class ReportTab(BoxLayout):
 
         self.add_widget(top)
 
-        # --- Строка 2: Организация и Директор ---
         row2 = BoxLayout(size_hint_y=None, height=dp(46), spacing=5, padding=(5, 0, 5, 5))
         
         row2.add_widget(Label(text="Организация:", size_hint_x=None, width=dp(95),
@@ -182,116 +277,291 @@ class ReportTab(BoxLayout):
         self.add_widget(scroll)
 
     def show_signers_popup(self, *args):
+        self._migrate_signers_once()
+
         content = BoxLayout(orientation='vertical', spacing=10, padding=10)
-        
-        add_title = Label(text="Добавить подписанта:", color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_y=None, height=dp(24), halign='left')
+
+        add_title = Label(text="Добавить подписанта:", color=LABEL_LIGHT,
+                          font_name=FONT_NAME, size_hint_y=None, height=dp(24),
+                          halign='left')
         add_title.bind(size=lambda i, v: setattr(i, 'text_size', v))
         content.add_widget(add_title)
 
         add_row = BoxLayout(size_hint_y=None, height=dp(40), spacing=5)
-        
-        new_pos = TextInput(hint_text="Должность", multiline=False, font_size=dp(14), 
-                            font_name=FONT_NAME, halign='left', padding=[dp(10), dp(12), dp(10), dp(12)])
-        
-        new_name = TextInput(hint_text="Фамилия И.О.", multiline=False, font_size=dp(14), 
-                             font_name=FONT_NAME, halign='left', padding=[dp(10), dp(12), dp(10), dp(12)])
-        
-        pick_btn = Button(text="Выбрать...", size_hint_x=None, width=dp(110), 
+
+        new_pos = TextInput(hint_text="Должность", multiline=False,
+                            font_size=dp(14), font_name=FONT_NAME, halign='left',
+                            padding=[dp(10), dp(12), dp(10), dp(12)])
+        new_name = TextInput(hint_text="Фамилия И.О.", multiline=False,
+                             font_size=dp(14), font_name=FONT_NAME, halign='left',
+                             padding=[dp(10), dp(12), dp(10), dp(12)])
+
+        pick_btn = Button(text="Выбрать...", size_hint_x=None, width=dp(110),
                           background_color=(0.4, 0.5, 0.7, 1), color=(1, 1, 1, 1),
                           font_name=FONT_NAME, font_size=dp(14), bold=True)
+        add_btn = Button(text="Добавить", size_hint_x=None, width=dp(100),
+                         background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1))
 
-        add_btn = Button(text="Добавить", size_hint_x=None, width=dp(100), background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1))
-        
         add_row.add_widget(new_pos)
         add_row.add_widget(new_name)
         add_row.add_widget(pick_btn)
         add_row.add_widget(add_btn)
         content.add_widget(add_row)
+
+        # --- ЗАГОЛОВОК ТАБЛИЦЫ ---
+        table_header = BoxLayout(size_hint_y=None, height=dp(30), spacing=0)
         
-        content.add_widget(Label(text="Список подписантов (галочка — выводить в Excel):", color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_y=None, height=dp(24), halign='left'))
+        h_chk = BoxLayout(size_hint_x=None, width=dp(40))
+        add_left_border(h_chk, color=(0.4, 0.4, 0.4, 1))
+        add_right_border(h_chk, color=(0.4, 0.4, 0.4, 1))
+        table_header.add_widget(h_chk)
         
+        h_pos = BoxLayout(size_hint_x=1)
+        add_right_border(h_pos, color=(0.4, 0.4, 0.4, 1))
+        lbl_pos = Label(text="Должность", bold=True, color=LABEL_LIGHT, font_name=FONT_NAME)
+        h_pos.add_widget(lbl_pos)
+        table_header.add_widget(h_pos)
+        
+        h_name = BoxLayout(size_hint_x=1)
+        add_right_border(h_name, color=(0.4, 0.4, 0.4, 1))
+        lbl_name = Label(text="Фамилия И.О.", bold=True, color=LABEL_LIGHT, font_name=FONT_NAME)
+        h_name.add_widget(lbl_name)
+        table_header.add_widget(h_name)
+        
+        h_act = BoxLayout(size_hint_x=None, width=dp(200))
+        add_right_border(h_act, color=(0.4, 0.4, 0.4, 1))
+        lbl_act = Label(text="Действия", bold=True, color=LABEL_LIGHT, font_name=FONT_NAME)
+        h_act.add_widget(lbl_act)
+        table_header.add_widget(h_act)
+        
+        add_top_border(table_header, color=(0.4, 0.4, 0.4, 1))
+        add_bottom_border(table_header, color=(0.4, 0.4, 0.4, 1))
+        content.add_widget(table_header)
+
         sv = ScrollView()
-        grid = GridLayout(cols=1, size_hint_y=None, spacing=5)
+        grid = GridLayout(cols=1, size_hint_y=None, spacing=0)
         grid.bind(minimum_height=grid.setter('height'))
         sv.add_widget(grid)
         content.add_widget(sv)
-        
-        close_btn = Button(text="Закрыть", size_hint_y=None, height=dp(40), color=(1,1,1,1), font_name=FONT_NAME)
+
+        close_btn = Button(text="Закрыть", size_hint_y=None, height=dp(40),
+                           color=(1, 1, 1, 1), font_name=FONT_NAME)
         content.add_widget(close_btn)
-        
-        popup = Popup(title="Дополнительные подписанты", content=content, size_hint=(0.85, 0.65), title_color=LABEL_LIGHT, title_font=FONT_NAME)
-        
+
+        popup = Popup(title="Дополнительные подписанты", content=content,
+                      size_hint=(0.85, 0.75), title_color=LABEL_LIGHT,
+                      title_font=FONT_NAME)
+
         def save_signers(signers_list):
             set_local_signers(signers_list)
             self.update_preview()
+
+        def open_edit_local_dialog(idx, signers, rebuild_cb):
+            s = signers[idx]
+            edit_content = BoxLayout(orientation='vertical', spacing=10, padding=(30, 20, 30, 20))
+
+            edit_content.add_widget(Widget(size_hint_y=1)) # Опускаем поля
+
+            lbl_pos = Label(text="Должность:", color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_y=None, height=dp(20), halign='center', valign='middle')
+            lbl_pos.bind(size=lambda i,v: setattr(i, 'text_size', v))
+            pos_in = TextInput(text=s.get('position', ''), multiline=False, font_size=dp(14),
+                               font_name=FONT_NAME, padding=[dp(10), dp(10), dp(10), dp(10)], size_hint_y=None, height=dp(38), halign='left')
+
+            lbl_name = Label(text="Фамилия И.О.:", color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_y=None, height=dp(20), halign='center', valign='middle')
+            lbl_name.bind(size=lambda i,v: setattr(i, 'text_size', v))
+            name_in = TextInput(text=s.get('name', ''), multiline=False, font_size=dp(14),
+                                font_name=FONT_NAME, padding=[dp(10), dp(10), dp(10), dp(10)], size_hint_y=None, height=dp(38), halign='left')
+
+            edit_content.add_widget(lbl_pos)
+            edit_content.add_widget(pos_in)
+            edit_content.add_widget(lbl_name)
+            edit_content.add_widget(name_in)
             
+            edit_content.add_widget(Widget(size_hint_y=1))
+
+            btns = BoxLayout(size_hint_y=None, height=dp(44), spacing=10)
+            save_b = Button(text="Сохранить", background_color=(0.3, 0.7, 0.3, 1), color=(1,1,1,1), font_name=FONT_NAME)
+            cancel_b = Button(text="Отмена", color=(1,1,1,1), font_name=FONT_NAME)
+            btns.add_widget(save_b)
+            btns.add_widget(cancel_b)
+            edit_content.add_widget(btns)
+
+            p = Popup(title="Редактирование подписанта", content=edit_content, size_hint=(0.45, 0.45),
+                      title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+
+            def do_save(*a):
+                new_n = name_in.text.strip()
+                new_p = pos_in.text.strip()
+                old_n = s.get('name', '')
+                old_p = s.get('position', '')
+                
+                if new_n and new_p:
+                    signers[idx]['name'] = new_n
+                    signers[idx]['position'] = new_p
+                    set_local_signers(signers)
+                    
+                    shared = self.app.data.setdefault('shared_signers', [])
+                    for sh in shared:
+                        if sh.get('name') == old_n and sh.get('position') == old_p:
+                            sh['name'] = new_n
+                            sh['position'] = new_p
+                            break
+                    save_data(self.app.data)
+                    
+                    self.update_preview()
+                    rebuild_cb()
+                p.dismiss()
+
+            save_b.bind(on_press=do_save)
+            cancel_b.bind(on_press=p.dismiss)
+            pos_in.bind(on_text_validate=do_save)
+            name_in.bind(on_text_validate=do_save)
+            bind_enter_key(p, do_save)
+            p.open()
+
         def rebuild_list():
             grid.clear_widgets()
-            signers = get_local_signers()
+
+            shared = self.app.data.get('shared_signers', [])
+            shared_keys = {(sh.get('name', '').strip(), sh.get('position', '').strip()) for sh in shared}
+            local_list = get_local_signers()
+            
+            # --- УДАЛЕНИЕ ДУБЛИКАТОВ ПРИ ЗАГРУЗКЕ ---
+            cleaned = []
+            seen = set()
+            for s in local_list:
+                n = (s.get('name') or '').strip()
+                p = (s.get('position') or '').strip()
+                key = (n, p)
+                if key in shared_keys and key not in seen:
+                    cleaned.append(s)
+                    seen.add(key)
+                    
+            if len(cleaned) != len(local_list):
+                set_local_signers(cleaned)
+                self.update_preview()
+
+            signers = cleaned
 
             for i, s in enumerate(signers):
-                row = BoxLayout(size_hint_y=None, height=dp(40), spacing=5)
-                
-                cb = CheckBox(active=s.get('active', True), size_hint_x=None, width=dp(40))
+                orig_n = (s.get('name') or '').strip()
+                orig_p = (s.get('position') or '').strip()
+
+                row = BoxLayout(size_hint_y=None, height=dp(36), spacing=0)
+                add_bottom_border(row, color=(0.4, 0.4, 0.4, 1))
+
+                # Галочка
+                c_box = BoxLayout(size_hint_x=None, width=dp(40))
+                add_left_border(c_box, color=(0.4, 0.4, 0.4, 1))
+                add_right_border(c_box, color=(0.4, 0.4, 0.4, 1))
+                cb = CheckBox(active=s.get('active', True))
                 def make_toggle(idx):
                     def toggle(inst, val):
                         signers[idx]['active'] = val
                         save_signers(signers)
                     return toggle
                 cb.bind(active=make_toggle(i))
-                row.add_widget(cb)
+                c_box.add_widget(cb)
+                row.add_widget(c_box)
+
+                # Должность
+                p_box = BoxLayout(size_hint_x=1, padding=(dp(5), 0, 0, 0))
+                add_right_border(p_box, color=(0.4, 0.4, 0.4, 1))
+                lbl_pos = Label(text=orig_p, font_size=dp(14), font_name=FONT_NAME, halign='left', valign='middle', color=LABEL_LIGHT)
+                lbl_pos.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0]-dp(5), val[1])))
+                p_box.add_widget(lbl_pos)
+                row.add_widget(p_box)
+
+                # ФИО
+                n_box = BoxLayout(size_hint_x=1, padding=(dp(5), 0, 0, 0))
+                add_right_border(n_box, color=(0.4, 0.4, 0.4, 1))
+                lbl_name = Label(text=orig_n, font_size=dp(14), font_name=FONT_NAME, halign='left', valign='middle', color=LABEL_LIGHT)
+                lbl_name.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0]-dp(5), val[1])))
+                n_box.add_widget(lbl_name)
+                row.add_widget(n_box)
+
+                # Действия
+                a_box = BoxLayout(size_hint_x=None, width=dp(200), spacing=dp(4), padding=(dp(4), dp(2)))
+                add_right_border(a_box, color=(0.4, 0.4, 0.4, 1))
                 
-                pos_in = TextInput(text=s.get('position', ''), multiline=False, font_size=dp(14), 
-                                   font_name=FONT_NAME, halign='left', padding=[dp(10), dp(12), dp(10), dp(12)])
-                def make_pos_save(idx):
-                    def save(inst, val):
-                        signers[idx]['position'] = val
-                        save_signers(signers)
-                    return save
-                pos_in.bind(text=make_pos_save(i))
-                row.add_widget(pos_in)
-                
-                name_in = TextInput(text=s.get('name', ''), multiline=False, font_size=dp(14), 
-                                    font_name=FONT_NAME, halign='left', padding=[dp(10), dp(12), dp(10), dp(12)])
-                def make_name_save(idx):
-                    def save(inst, val):
-                        signers[idx]['name'] = val
-                        save_signers(signers)
-                    return save
-                name_in.bind(text=make_name_save(i))
-                row.add_widget(name_in)
-                
-                del_btn = Button(text="Удалить", size_hint_x=None, width=dp(100), background_color=(0.8, 0.2, 0.2, 1), color=(1, 1, 1, 1))
+                edit_btn = Button(text="Изменить", background_color=(0.35, 0.55, 0.85, 1), color=(1, 1, 1, 1), font_name=FONT_NAME, font_size=dp(12))
+                edit_btn.bind(on_press=lambda *a, idx=i: open_edit_local_dialog(idx, signers, rebuild_list))
+                a_box.add_widget(edit_btn)
+
+                del_btn = Button(text="Удалить", background_color=(0.8, 0.2, 0.2, 1), color=(1, 1, 1, 1), font_name=FONT_NAME, font_size=dp(12))
                 def make_del(idx):
                     def delete(inst):
-                        signers.pop(idx)
-                        save_signers(signers)
-                        rebuild_list()
+                        s_item = signers[idx]
+                        s_n = (s_item.get('name') or '').strip()
+                        s_p = (s_item.get('position') or '').strip()
+
+                        def do_delete():
+                            signers.pop(idx)
+                            set_local_signers(signers)
+                            
+                            sh_list = self.app.data.get('shared_signers', [])
+                            new_sh = [sh for sh in sh_list if not (sh.get('name', '').strip() == s_n and sh.get('position', '').strip() == s_p)]
+                            self.app.data['shared_signers'] = new_sh
+                            save_data(self.app.data)
+                            
+                            self.update_preview()
+                            rebuild_list()
+
+                        ask_password_and_run(
+                            DELETE_PASSWORD, do_delete, 
+                            description=f"Удалить подписанта «{s_p} — {s_n}»\nиз базы и списка?"
+                        )
                     return delete
                 del_btn.bind(on_press=make_del(i))
-                row.add_widget(del_btn)
+                a_box.add_widget(del_btn)
                 
+                row.add_widget(a_box)
                 grid.add_widget(row)
-                
+
         def do_add(*a):
             pos = new_pos.text.strip()
             nm = new_name.text.strip()
             if pos and nm:
                 signers = get_local_signers()
+                
+                # --- ПРОВЕРКА НА ДУБЛИКАТ ---
+                if any((s.get('name', '').strip() == nm and s.get('position', '').strip() == pos) for s in signers):
+                    err_content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+                    err_content.add_widget(Label(
+                        text=f"Подписант «{pos} — {nm}»\nуже добавлен в ваш список!",
+                        color=LABEL_LIGHT, halign='center', valign='middle',
+                        font_name=FONT_NAME, font_size=dp(14)
+                    ))
+                    ok_btn = Button(text="ОК", size_hint_y=None, height=dp(40), font_name=FONT_NAME, background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1))
+                    err_content.add_widget(ok_btn)
+                    err_popup = Popup(title="Дубликат", content=err_content, size_hint=(0.45, 0.3), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+                    ok_btn.bind(on_press=err_popup.dismiss)
+                    bind_enter_key(err_popup, err_popup.dismiss) # <--- ДОБАВЛЕНО ЗДЕСЬ
+                    err_popup.open()
+                    return
+                # -----------------------------
+
                 signers.append({'name': nm, 'position': pos, 'active': True})
                 save_signers(signers)
-                
+
+                shared = self.app.data.setdefault('shared_signers', [])
+                if not any((sh.get('name', '').strip() == nm and sh.get('position', '').strip() == pos) for sh in shared):
+                    shared.append({'name': nm, 'position': pos})
+                    save_data(self.app.data)
+
                 new_pos.text = ""
                 new_name.text = ""
                 rebuild_list()
 
         def open_signer_picker(*args):
             candidates = set()
-            
-            # Берем подписантов ТОЛЬКО из локального списка
+            for s in self.app.data.get('shared_signers', []):
+                nm = (s.get('name') or '').strip()
+                pos = (s.get('position') or '').strip()
+                if pos and nm: candidates.add((pos, nm))
             for s in get_local_signers():
-                nm = s.get('name', '').strip()
-                pos = s.get('position', '').strip()
+                nm = (s.get('name') or '').strip()
+                pos = (s.get('position') or '').strip()
                 if pos and nm: candidates.add((pos, nm))
 
             sorted_cands = sorted(list(candidates), key=lambda x: (x[0].lower(), x[1].lower()))
@@ -312,19 +582,20 @@ class ReportTab(BoxLayout):
                 _bg = Rectangle(pos=pick_header.pos, size=pick_header.size)
             pick_header.bind(pos=lambda i,v: setattr(_bg, 'pos', v), size=lambda i,v: setattr(_bg, 'size', v))
 
-            h_pos = Label(text="Должность", bold=True, color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_x=0.6, 
-                          halign='center', valign='middle')
+            h_pos = Label(text="Должность", bold=True, color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_x=0.5, halign='center', valign='middle')
             h_pos.bind(size=lambda i,v: setattr(i, 'text_size', (v[0], v[1])))
-            add_bottom_border(h_pos, color=(0.4, 0.4, 0.4, 1))
-            add_right_border(h_pos, color=(0.4, 0.4, 0.4, 1))
+            add_bottom_border(h_pos, color=(0.4, 0.4, 0.4, 1)); add_right_border(h_pos, color=(0.4, 0.4, 0.4, 1))
             pick_header.add_widget(h_pos)
 
-            h_name = Label(text="Фамилия И.О.", bold=True, color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_x=0.4, 
-                           halign='center', valign='middle')
+            h_name = Label(text="Фамилия И.О.", bold=True, color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_x=0.5, halign='center', valign='middle')
             h_name.bind(size=lambda i,v: setattr(i, 'text_size', (v[0], v[1])))
-            add_bottom_border(h_name, color=(0.4, 0.4, 0.4, 1))
-            add_right_border(h_name, color=(0.4, 0.4, 0.4, 1))
+            add_bottom_border(h_name, color=(0.4, 0.4, 0.4, 1)); add_right_border(h_name, color=(0.4, 0.4, 0.4, 1))
             pick_header.add_widget(h_name)
+            
+            h_act = Label(text="Действия", bold=True, color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_x=None, width=dp(200), halign='center', valign='middle')
+            h_act.bind(size=lambda i,v: setattr(i, 'text_size', (v[0], v[1])))
+            add_bottom_border(h_act, color=(0.4, 0.4, 0.4, 1)); add_right_border(h_act, color=(0.4, 0.4, 0.4, 1))
+            pick_header.add_widget(h_act)
 
             pick_content.add_widget(pick_header)
 
@@ -334,46 +605,105 @@ class ReportTab(BoxLayout):
             pick_scroll.add_widget(pick_grid)
             pick_content.add_widget(pick_scroll)
 
-            # Переименовали заголовок, так как база теперь локальная
-            picker = Popup(title="Выбор подписанта из списка", content=pick_content, size_hint=(0.6, 0.6), 
-                           title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+            picker = Popup(title="Выбор подписанта из общей базы", content=pick_content, size_hint=(0.75, 0.7), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+
+            def edit_shared(p_pos, p_nm):
+                edit_content = BoxLayout(orientation='vertical', spacing=10, padding=(30, 20, 30, 20))
+                
+                edit_content.add_widget(Widget(size_hint_y=1))
+
+                lbl_pos = Label(text="Должность:", color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_y=None, height=dp(20), halign='center', valign='middle')
+                lbl_pos.bind(size=lambda i,v: setattr(i, 'text_size', v))
+                pos_in = TextInput(text=p_pos, multiline=False, font_size=dp(14), font_name=FONT_NAME, padding=[dp(10), dp(10), dp(10), dp(10)], size_hint_y=None, height=dp(38), halign='left')
+                
+                lbl_name = Label(text="Фамилия И.О.:", color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_y=None, height=dp(20), halign='center', valign='middle')
+                lbl_name.bind(size=lambda i,v: setattr(i, 'text_size', v))
+                name_in = TextInput(text=p_nm, multiline=False, font_size=dp(14), font_name=FONT_NAME, padding=[dp(10), dp(10), dp(10), dp(10)], size_hint_y=None, height=dp(38), halign='left')
+
+                edit_content.add_widget(lbl_pos)
+                edit_content.add_widget(pos_in)
+                edit_content.add_widget(lbl_name)
+                edit_content.add_widget(name_in)
+                
+                edit_content.add_widget(Widget(size_hint_y=1))
+
+                btns = BoxLayout(size_hint_y=None, height=dp(44), spacing=10)
+                save_b = Button(text="Сохранить", background_color=(0.3, 0.7, 0.3, 1), color=(1,1,1,1), font_name=FONT_NAME)
+                cancel_b = Button(text="Отмена", color=(1,1,1,1), font_name=FONT_NAME)
+                btns.add_widget(save_b); btns.add_widget(cancel_b)
+                edit_content.add_widget(btns)
+
+                ep = Popup(title="Редактирование в базе", content=edit_content, size_hint=(0.45, 0.45), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+
+                def do_save(*a):
+                    n_new = name_in.text.strip()
+                    p_new = pos_in.text.strip()
+                    if not n_new or not p_new: return
+                    
+                    shared = self.app.data.get('shared_signers', [])
+                    for sh in shared:
+                        if (sh.get('name') or '').strip() == p_nm and (sh.get('position') or '').strip() == p_pos:
+                            sh['name'] = n_new
+                            sh['position'] = p_new
+                    save_data(self.app.data)
+
+                    local = get_local_signers()
+                    changed = False
+                    for s in local:
+                        if (s.get('name') or '').strip() == p_nm and (s.get('position') or '').strip() == p_pos:
+                            s['name'] = n_new
+                            s['position'] = p_new
+                            changed = True
+                    if changed:
+                        set_local_signers(local)
+                        self.update_preview()
+
+                    if (p_pos, p_nm) in candidates:
+                        candidates.remove((p_pos, p_nm))
+                    candidates.add((p_new, n_new))
+                    rebuild_pick_list(search_input.text)
+                    rebuild_list()
+                    ep.dismiss()
+
+                save_b.bind(on_press=do_save)
+                cancel_b.bind(on_press=ep.dismiss)
+                pos_in.bind(on_text_validate=do_save)
+                name_in.bind(on_text_validate=do_save)
+                bind_enter_key(ep, do_save)
+                ep.open()
+
+            def delete_shared(p_pos, p_nm):
+                def do_delete():
+                    shared = self.app.data.get('shared_signers', [])
+                    self.app.data['shared_signers'] = [s for s in shared if not ((s.get('name') or '').strip() == p_nm and (s.get('position') or '').strip() == p_pos)]
+                    save_data(self.app.data)
+                    
+                    local = get_local_signers()
+                    local_clean = [s for s in local if not ((s.get('name') or '').strip() == p_nm and (s.get('position') or '').strip() == p_pos)]
+                    set_local_signers(local_clean)
+                    self.update_preview()
+                    
+                    if (p_pos, p_nm) in candidates:
+                        candidates.remove((p_pos, p_nm))
+                    rebuild_pick_list(search_input.text)
+                    rebuild_list()
+
+                ask_password_and_run(
+                    DELETE_PASSWORD, do_delete,
+                    description=f"Удалить из базы «{p_pos} — {p_nm}»?\n(удалится у всех)"
+                )
 
             def rebuild_pick_list(query=''):
                 pick_grid.clear_widgets()
                 q = query.lower()
                 found = False
                 
-                for pos, nm in sorted_cands:
+                for pos, nm in sorted(candidates, key=lambda x: (x[0].lower(), x[1].lower())):
                     if q in pos.lower() or q in nm.lower():
                         found = True
                         
-                        row_btn = Button(
-                            text='', size_hint_y=None, height=dp(40),
-                            background_normal='', background_color=(0.15, 0.15, 0.18, 1),
-                            padding=[0, 0, 0, 0]
-                        )
-                        add_bottom_border(row_btn, color=(0.4, 0.4, 0.4, 1))
-                        add_left_border(row_btn, color=(0.4, 0.4, 0.4, 1))
-                        add_right_border(row_btn, color=(0.4, 0.4, 0.4, 1))
-
-                        row_layout = BoxLayout(orientation='horizontal', spacing=0)
-                        row_btn.bind(pos=lambda inst, val, rl=row_layout: setattr(rl, 'pos', val),
-                                     size=lambda inst, val, rl=row_layout: setattr(rl, 'size', val))
-
-                        cell_pos = BoxLayout(size_hint_x=0.6, padding=(dp(10), 0, 0, 0))
-                        lbl_pos = Label(text=pos, color=(1, 1, 1, 1), font_name=FONT_NAME, font_size=dp(14), halign='left', valign='middle')
-                        lbl_pos.bind(size=lambda i,v: setattr(i, 'text_size', (v[0], v[1])))
-                        cell_pos.add_widget(lbl_pos)
-                        add_right_border(cell_pos, color=(0.4, 0.4, 0.4, 1))
-                        row_layout.add_widget(cell_pos)
-
-                        cell_name = BoxLayout(size_hint_x=0.4, padding=(dp(10), 0, 0, 0))
-                        lbl_name = Label(text=nm, color=(1, 1, 1, 1), font_name=FONT_NAME, font_size=dp(14), halign='left', valign='middle')
-                        lbl_name.bind(size=lambda i,v: setattr(i, 'text_size', (v[0], v[1])))
-                        cell_name.add_widget(lbl_name)
-                        row_layout.add_widget(cell_name)
-
-                        row_btn.add_widget(row_layout)
+                        row_layout = HoverClickableRow(spacing=0)
+                        add_bottom_border(row_layout, color=(0.4, 0.4, 0.4, 1))
                         
                         def make_select(p=pos, n=nm):
                             def _sel(*a):
@@ -382,8 +712,35 @@ class ReportTab(BoxLayout):
                                 picker.dismiss()
                             return _sel
 
-                        row_btn.bind(on_press=make_select())
-                        pick_grid.add_widget(row_btn)
+                        cell_pos = BoxLayout(size_hint_x=0.5, padding=(dp(10), 0, 0, 0))
+                        lbl_pos = Label(text=pos, color=(1, 1, 1, 1), font_name=FONT_NAME, font_size=dp(14), halign='left', valign='middle')
+                        lbl_pos.bind(size=lambda i,v: setattr(i, 'text_size', (v[0], v[1])))
+                        cell_pos.add_widget(lbl_pos)
+                        add_right_border(cell_pos, color=(0.4, 0.4, 0.4, 1))
+                        row_layout.add_widget(cell_pos)
+                        
+                        cell_name = BoxLayout(size_hint_x=0.5, padding=(dp(10), 0, 0, 0))
+                        lbl_name = Label(text=nm, color=(1, 1, 1, 1), font_name=FONT_NAME, font_size=dp(14), halign='left', valign='middle')
+                        lbl_name.bind(size=lambda i,v: setattr(i, 'text_size', (v[0], v[1])))
+                        cell_name.add_widget(lbl_name)
+                        add_right_border(cell_name, color=(0.4, 0.4, 0.4, 1))
+                        row_layout.add_widget(cell_name)
+                        
+                        row_layout.bind(on_press=make_select())
+
+                        act_box = BoxLayout(size_hint_x=None, width=dp(200), spacing=dp(4), padding=(dp(4), dp(4)))
+                        add_right_border(act_box, color=(0.4, 0.4, 0.4, 1))
+                        
+                        ed_btn = Button(text="Изменить", background_color=(0.35, 0.55, 0.85, 1), color=(1,1,1,1), font_name=FONT_NAME, font_size=dp(12))
+                        ed_btn.bind(on_press=lambda *a, p=pos, n=nm: edit_shared(p, n))
+                        act_box.add_widget(ed_btn)
+
+                        del_btn = Button(text="Удалить", background_color=(0.8, 0.2, 0.2, 1), color=(1,1,1,1), font_name=FONT_NAME, font_size=dp(12))
+                        del_btn.bind(on_press=lambda *a, p=pos, n=nm: delete_shared(p, n))
+                        act_box.add_widget(del_btn)
+                        
+                        row_layout.add_widget(act_box)
+                        pick_grid.add_widget(row_layout)
 
                 if not found:
                     lbl = Label(text="Ничего не найдено", color=(0.6, 0.6, 0.6, 1), font_name=FONT_NAME, size_hint_y=None, height=dp(40))
@@ -400,10 +757,9 @@ class ReportTab(BoxLayout):
         pick_btn.bind(on_press=open_signer_picker)
         add_btn.bind(on_press=do_add)
         close_btn.bind(on_press=popup.dismiss)
-        
         new_pos.bind(on_text_validate=do_add)
         new_name.bind(on_text_validate=do_add)
-        
+
         popup.open()
         rebuild_list()
 
@@ -548,7 +904,6 @@ class ReportTab(BoxLayout):
             f"  Подписи: {signer_pos} — {signer_name}    ",
         ]
 
-        # Берем локальных подписантов
         add_signers = get_local_signers()
         for s in add_signers:
             if s.get('active', True):
@@ -600,4 +955,5 @@ class ReportTab(BoxLayout):
         inner.add_widget(ok_btn)
         popup = Popup(title="Нужен openpyxl", content=inner, size_hint=(0.85, 0.55), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
         ok_btn.bind(on_press=popup.dismiss)
+        bind_enter_key(popup, popup.dismiss)
         popup.open()

@@ -286,7 +286,7 @@ def ask_password_and_run(password, on_success,
     content.add_widget(btns)
 
     popup = Popup(title=title, content=content,
-                  size_hint=(0.48, None), height=dp(280),
+                  size_hint=(0.45, None), height=dp(220),  # <--- Было 0.48 и 280
                   title_color=LABEL_LIGHT, title_font=FONT_NAME,
                   auto_dismiss=False) 
 
