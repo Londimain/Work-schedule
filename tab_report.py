@@ -228,33 +228,8 @@ class ReportTab(BoxLayout):
         def rebuild_list():
             grid.clear_widgets()
             signers = get_local_signers()
-            state = {} # Для отслеживания старых значений при редактировании
-            
-            # Вспомогательная функция для синхронизации с общей базой
-            def update_shared_db(idx):
-                old_n = state[idx]['name']
-                old_p = state[idx]['position']
-                new_n = signers[idx]['name']
-                new_p = signers[idx]['position']
-                
-                if old_n != new_n or old_p != new_p:
-                    shared = self.app.data.setdefault('shared_signers', [])
-                    changed = False
-                    for sh in shared:
-                        if sh.get('name') == old_n and sh.get('position') == old_p:
-                            sh['name'] = new_n
-                            sh['position'] = new_p
-                            changed = True
-                            break
-                    if changed:
-                        save_data(self.app.data)
-                    # Обновляем состояние, чтобы при следующем вводе буквы снова найти запись
-                    state[idx]['name'] = new_n
-                    state[idx]['position'] = new_p
 
             for i, s in enumerate(signers):
-                state[i] = {'name': s.get('name', ''), 'position': s.get('position', '')}
-                
                 row = BoxLayout(size_hint_y=None, height=dp(40), spacing=5)
                 
                 cb = CheckBox(active=s.get('active', True), size_hint_x=None, width=dp(40))
@@ -272,7 +247,6 @@ class ReportTab(BoxLayout):
                     def save(inst, val):
                         signers[idx]['position'] = val
                         save_signers(signers)
-                        update_shared_db(idx)
                     return save
                 pos_in.bind(text=make_pos_save(i))
                 row.add_widget(pos_in)
@@ -283,7 +257,6 @@ class ReportTab(BoxLayout):
                     def save(inst, val):
                         signers[idx]['name'] = val
                         save_signers(signers)
-                        update_shared_db(idx)
                     return save
                 name_in.bind(text=make_name_save(i))
                 row.add_widget(name_in)
@@ -291,16 +264,6 @@ class ReportTab(BoxLayout):
                 del_btn = Button(text="Удалить", size_hint_x=None, width=dp(100), background_color=(0.8, 0.2, 0.2, 1), color=(1, 1, 1, 1))
                 def make_del(idx):
                     def delete(inst):
-                        # Удаляем из общей базы
-                        old_n = state[idx]['name']
-                        old_p = state[idx]['position']
-                        shared = self.app.data.setdefault('shared_signers', [])
-                        for j, sh in enumerate(shared):
-                            if sh.get('name') == old_n and sh.get('position') == old_p:
-                                shared.pop(j)
-                                save_data(self.app.data)
-                                break
-                        
                         signers.pop(idx)
                         save_signers(signers)
                         rebuild_list()
@@ -318,11 +281,6 @@ class ReportTab(BoxLayout):
                 signers.append({'name': nm, 'position': pos, 'active': True})
                 save_signers(signers)
                 
-                shared = self.app.data.setdefault('shared_signers', [])
-                if not any(s.get('name') == nm and s.get('position') == pos for s in shared):
-                    shared.append({'name': nm, 'position': pos})
-                    save_data(self.app.data)
-                
                 new_pos.text = ""
                 new_name.text = ""
                 rebuild_list()
@@ -330,11 +288,7 @@ class ReportTab(BoxLayout):
         def open_signer_picker(*args):
             candidates = set()
             
-            for s in self.app.data.get('shared_signers', []):
-                nm = s.get('name', '').strip()
-                pos = s.get('position', '').strip()
-                if pos and nm: candidates.add((pos, nm))
-                
+            # Берем подписантов ТОЛЬКО из локального списка
             for s in get_local_signers():
                 nm = s.get('name', '').strip()
                 pos = s.get('position', '').strip()
@@ -380,7 +334,8 @@ class ReportTab(BoxLayout):
             pick_scroll.add_widget(pick_grid)
             pick_content.add_widget(pick_scroll)
 
-            picker = Popup(title="Выбор подписанта из общей базы", content=pick_content, size_hint=(0.6, 0.6), 
+            # Переименовали заголовок, так как база теперь локальная
+            picker = Popup(title="Выбор подписанта из списка", content=pick_content, size_hint=(0.6, 0.6), 
                            title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
 
             def rebuild_pick_list(query=''):
