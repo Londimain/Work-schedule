@@ -30,7 +30,6 @@ class HoverButton(Button):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._hovering = False
-        # Накладываем прозрачный слой поверх кнопки
         with self.canvas.after:
             self._hover_color = Color(1, 1, 1, 0)
             self._hover_rect = Rectangle(pos=self.pos, size=self.size)
@@ -45,7 +44,6 @@ class HoverButton(Button):
         self._hover_rect.pos = self.pos
         self._hover_rect.size = self.size
         if hasattr(self, '_border_line'):
-            # Обновляем координаты обводки при изменении размера/позиции кнопки
             self._border_line.rectangle = (self.x, self.y, self.width, self.height)
 
     def _on_parent(self, instance, parent):
@@ -63,9 +61,7 @@ class HoverButton(Button):
         if not self.get_root_window() or self.disabled:
             return
         try:
-            # Переводим локальные координаты виджета в координаты экрана
             wx, wy = self.to_window(self.x, self.y)
-            # Сравниваем с позицией курсора
             if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
                 if not self._hovering:
                     self._hovering = True
@@ -79,23 +75,21 @@ class HoverButton(Button):
 
     def _update_hover(self):
         if self._hovering or self.state == 'down':
-            self._hover_color.rgba = (1, 1, 1, 0.15) # Мягкая белая подсветка
+            self._hover_color.rgba = (1, 1, 1, 0.15)
         else:
             self._hover_color.rgba = (1, 1, 1, 0)
 
 
 # ---------------------------------------------------------------------------
 class NavTextInput(TextInput):
-    """TextInput с двумя внешними обработчиками:
-       - extra_key_callback(key, modifiers) — перехват Ctrl+C/V
-       - nav_callback(key, modifiers)       — навигация по ячейкам
-    """
     nav_callback = None
     extra_key_callback = None
     _just_focused = False
     shift_state = {'held': False}
 
     def on_touch_down(self, touch):
+        if getattr(touch, 'is_mouse_scrolling', False):
+            return False  
         if NavTextInput.shift_state['held'] and self.collide_point(*touch.pos):
             return True
         return super().on_touch_down(touch)
@@ -146,8 +140,12 @@ class CenteredField(FloatLayout):
                  on_key_callback=None, extra_key_callback=None,
                  **ti_kwargs):
         super().__init__()
+        
         ti_kwargs.pop('valign', None)
         ti_kwargs.pop('input_height', None)
+        ti_kwargs.pop('background_color', None)
+        ti_kwargs.pop('background_normal', None)
+        ti_kwargs.pop('background_active', None)
 
         self._font_size = float(font_size)
         self._fg = fg_color
@@ -164,6 +162,9 @@ class CenteredField(FloatLayout):
             selection_color=(0.20, 0.45, 0.90, 0.40),
             padding=[0, 0, 0, 0],
             halign='center',
+            background_color=(0, 0, 0, 0),
+            background_normal='',
+            background_active='',
             **ti_kwargs,
         )
         self.input.nav_callback = on_key_callback
@@ -175,15 +176,10 @@ class CenteredField(FloatLayout):
         self._texture = None
         self._rect = None
         self._cursor_rect = None
+        self._blink_ev = None
 
         self.bind(pos=self._redraw, size=self._redraw)
         self._rebuild_texture(text)
-
-        self._blink_ev = None
-        Clock.schedule_once(self._start_blink, 0)
-
-    def _start_blink(self, dt):
-        self._blink_ev = Clock.schedule_interval(self._blink, 0.5)
 
     def _blink(self, dt):
         if self.input.focused:
@@ -196,8 +192,13 @@ class CenteredField(FloatLayout):
         self._cursor_on = True
         if value:
             self.input._just_focused = True
+            if self._blink_ev is None:
+                self._blink_ev = Clock.schedule_interval(self._blink, 0.5)
         else:
             self.input._just_focused = False
+            if self._blink_ev is not None:
+                self._blink_ev.cancel()
+                self._blink_ev = None
         self._redraw()
 
     def on_parent(self, inst, parent):
@@ -207,7 +208,16 @@ class CenteredField(FloatLayout):
 
     def _rebuild_texture(self, text):
         self.canvas.after.clear()
-        core = CoreLabel(text=text, font_size=self._font_size,
+        if not text:
+            self._texture = None
+            self._rect = None
+            with self.canvas.after:
+                Color(0.20, 0.45, 0.90, 1)
+                self._cursor_rect = Rectangle(pos=(-100, -100), size=(0, 0))
+            self._redraw()
+            return
+
+        core = CoreLabel(text=str(text), font_size=self._font_size,
                          color=self._fg, font_name=FONT_NAME)
         core.refresh()
         self._texture = core.texture
@@ -226,8 +236,20 @@ class CenteredField(FloatLayout):
     def _redraw(self, *a):
         self.input.pos = (self.x, self.y)
         self.input.size = (self.width, self.height)
+        
         if self._texture is None:
+            if self._cursor_rect is not None:
+                if self._cursor_on and self.input.focused:
+                    ch = self._font_size * 1.15
+                    cx = self.x + self.width / 2.0
+                    cy = self.y + self.height / 2.0
+                    self._cursor_rect.pos = (cx, cy - ch / 2.0)
+                    self._cursor_rect.size = (1.5, ch)
+                else:
+                    self._cursor_rect.pos = (-100, -100)
+                    self._cursor_rect.size = (0, 0)
             return
+
         tw, th = self._texture.size
         cy = self.y + self.height / 2.0
         if self._halign == 'left':
@@ -237,6 +259,7 @@ class CenteredField(FloatLayout):
         else:
             x = self.x + (self.width - tw) / 2.0
         y = cy - th / 2.0
+        
         self._rect.pos = (x, y)
         self._rect.size = (tw, th)
         if self._cursor_rect is not None:
@@ -260,7 +283,7 @@ class CenteredField(FloatLayout):
 # ---------------------------------------------------------------------------
 class LightSpinnerOption(SpinnerOption):
     NORMAL_BG = (0.14, 0.14, 0.16, 1)
-    HOVER_BG  = (0.30, 0.30, 0.35, 1)  # <--- Спокойный серый вместо ярко-синего
+    HOVER_BG  = (0.30, 0.30, 0.35, 1)
     TEXT_COL  = (1.00, 1.00, 1.00, 1)
     OUTLINE   = (0.00, 0.00, 0.00, 1)
     LINE_COL  = (0.42, 0.42, 0.48, 1)
@@ -268,7 +291,6 @@ class LightSpinnerOption(SpinnerOption):
     def __init__(self, **kwargs):
         kwargs.setdefault('size_hint_y', None)
         kwargs.setdefault('height', dp(44))
-        
         kwargs.setdefault('background_normal', '')
         kwargs.setdefault('background_down', '')
         kwargs.setdefault('background_color', (0, 0, 0, 0))
@@ -312,7 +334,6 @@ class LightSpinnerOption(SpinnerOption):
         if not self.get_root_window() or self.disabled:
             return
         try:
-            # Переводим локальные координаты виджета в координаты экрана
             wx, wy = self.to_window(self.x, self.y)
             if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
                 if not self._hovering:
@@ -461,7 +482,7 @@ class DayCell(BoxLayout):
         if show_right:
             add_right_border(self, color=HEADER_DIVIDER, thickness=1)
         _w = CenteredField(
-            text=text, font_size=dp(14), pad_lr=dp(2),
+            text=text, font_size=dp(14), pad_lr=dp(1),
             halign='center', fg_color=fg,
             background_color=(0, 0, 0, 0),
             background_normal='', background_active='',

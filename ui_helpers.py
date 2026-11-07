@@ -11,27 +11,39 @@ from kivy.uix.widget import Widget
 
 from config import FONT_NAME, DIVIDER_COLOR, HEADER_DIVIDER
 
-
+# Кэш для измерения текста (ускоряет загрузку таблицы в разы)
+_TEXT_WIDTH_CACHE = {}
 def measure_text_width(text, font_size=14):
     if not text:
         return 0
+    key = (str(text), font_size)
+    if key in _TEXT_WIDTH_CACHE:
+        return _TEXT_WIDTH_CACHE[key]
     try:
         core = CoreLabel(text=str(text), font_size=dp(font_size),
                          font_name=FONT_NAME)
         core.refresh()
-        return core.texture.size[0]
+        w = core.texture.size[0]
+        _TEXT_WIDTH_CACHE[key] = w
+        return w
     except Exception:
         return len(str(text)) * 8
 
+_TEXT_HEIGHT_CACHE = {}
 def measure_text_height(text, width, font_size=14):
     """Вычисляет высоту текста с учетом переноса строк."""
     if not text:
         return 0
+    key = (str(text), width, font_size)
+    if key in _TEXT_HEIGHT_CACHE:
+        return _TEXT_HEIGHT_CACHE[key]
     try:
         core = CoreLabel(text=str(text), font_size=dp(font_size),
                          font_name=FONT_NAME, text_size=(width, None))
         core.refresh()
-        return core.texture.size[1]
+        h = core.texture.size[1]
+        _TEXT_HEIGHT_CACHE[key] = h
+        return h
     except Exception:
         return dp(20)
 
@@ -136,7 +148,7 @@ class SmartScrollView(ScrollView):
     def on_touch_down(self, touch):
         if not self.collide_point(*touch.pos):
             return False
-        if 'button' in touch.profile and touch.button in ('scrollup', 'scrolldown'):
+        if 'button' in touch.profile and touch.button in ('scrollup', 'scrolldown', 'scrollleft', 'scrollright'):
             return super().on_touch_down(touch)
         if self._find_textinput_under(touch) is not None:
             return False
@@ -147,29 +159,42 @@ class SmartScrollView(ScrollView):
             return False
         return super().on_touch_move(touch)
 
-# ui_helpers.py (фрагмент)
 class HorizontalScrollView(SmartScrollView):
     def on_scroll_start(self, touch, check_children=True):
-        if 'button' in touch.profile and touch.button in ('scrollup', 'scrolldown'):
-            # Если контент полностью помещается на экране — блокируем прокрутку
-            if self.children and self.children[0].width <= self.width:
-                self.scroll_x = 0
+        # Обрабатываем только события колесика мыши
+        if 'button' in touch.profile and touch.button in ('scrollup', 'scrolldown', 'scrollleft', 'scrollright'):
+            from ui_widgets import DayCell
+            is_over_day_cell = False
+            
+            # Проверяем, находится ли курсор непосредственно над ячейкой с днями
+            for child in self.walk():
+                if isinstance(child, DayCell):
+                    try:
+                        lx, ly = child.to_widget(*touch.pos)
+                        if 0 <= lx <= child.width and 0 <= ly <= child.height:
+                            is_over_day_cell = True
+                            break
+                    except Exception:
+                        pass
+
+            # Если курсор над ячейкой с днями -> крутим влево/вправо
+            if is_over_day_cell:
+                if self.children and self.children[0].width <= self.width:
+                    self.scroll_x = 0
+                    return True
+
+                step = 0.1
+                if touch.button in ('scrollup', 'scrollleft'):
+                    self.scroll_x = max(0.0, self.scroll_x - step)
+                else:
+                    self.scroll_x = min(1.0, self.scroll_x + step)
+
                 return True
             
-            step = 0.15  # <--- УВЕЛИЧИЛИ ШАГ С 0.05 ДО 0.15
-            if touch.button == 'scrollup':
-                self.scroll_x = max(0.0, self.scroll_x - step)
-            else:
-                self.scroll_x = min(1.0, self.scroll_x + step)
-                
-            # Жестко прилипаем к краям, чтобы не оставалось пустого места
-            if self.scroll_x < 0.01:
-                self.scroll_x = 0.0
-            elif self.scroll_x > 0.99:
-                self.scroll_x = 1.0
-                
-            return True
-            
+            # Если курсор НЕ над ячейкой (например, над заголовком или пустым местом), 
+            # то не перехватываем событие, пусть работает стандартный вертикальный скролл
+            return False
+
         return super().on_scroll_start(touch, check_children)
     
 from kivy.effects.scroll import ScrollEffect
@@ -180,14 +205,12 @@ class NoOverscrollEffect(ScrollEffect):
     """ScrollEffect без упругого отскока."""
     overscroll = NumericProperty(0)
 
-# ui_helpers.py
 
 def bind_enter_key(popup, callback):
     """Привязывает Enter (и Numpad Enter) к вызову callback при открытом popup."""
     from kivy.core.window import Window
     def _on_key_down(window, key, scancode, codepoint, modifiers):
         if key in (13, 271):  # 13 - Enter, 271 - Numpad Enter
-            # Проверяем, что этот popup сейчас открыт и является самым верхним
             if Window.children and Window.children[0] is popup:
                 callback()
                 return True
@@ -201,7 +224,8 @@ def bind_enter_key(popup, callback):
 
 def ask_password_and_run(password, on_success,
                          title="Подтверждение удаления",
-                         description=None):
+                         description=None,
+                         btn_text="Удалить"):
     """Попап с запросом пароля. При верном пароле вызывает on_success()."""
     from kivy.uix.popup import Popup
     from kivy.uix.boxlayout import BoxLayout
@@ -248,8 +272,11 @@ def ask_password_and_run(password, on_success,
     content.add_widget(err)
 
     btns = BoxLayout(size_hint_y=None, height=dp(42), spacing=10)
-    ok = Button(text="Удалить",
-                background_color=(0.9, 0.35, 0.35, 1),
+    
+    btn_bg = (0.9, 0.35, 0.35, 1) if btn_text == "Удалить" else (0.25, 0.55, 0.85, 1)
+    
+    ok = Button(text=btn_text,
+                background_color=btn_bg,
                 color=(1, 1, 1, 1), font_name=FONT_NAME,
                 font_size=dp(15), bold=True)
     cancel = Button(text="Отмена", color=(1, 1, 1, 1),
@@ -271,10 +298,9 @@ def ask_password_and_run(password, on_success,
             err.text = "Неверный пароль"
             pw.text = ""
 
-    # ... внутри ask_password_and_run ...
     ok.bind(on_press=do_ok)
     cancel.bind(on_press=popup.dismiss)
     pw.bind(on_text_validate=do_ok)
     
-    bind_enter_key(popup, do_ok)  # <--- ДОБАВИТЬ ЭТУ СТРОКУ
+    bind_enter_key(popup, do_ok)
     popup.open()

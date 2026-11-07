@@ -100,7 +100,7 @@ class RightClickBox(BoxLayout):
                 if self._on_left_click is not None:
                     try:
                         self._on_left_click(touch)
-                        return True  # <--- Возвращаем True, чтобы событие не шло дальше в ScrollView
+                        return True  
                     except Exception as e:
                         print("Left-click handler error:", e)
         return super().on_touch_down(touch)
@@ -461,7 +461,8 @@ class EmployeesTab(BoxLayout):
         if display_num is None:
             display_num = idx + 1
 
-        row = RightClickBox(size_hint_y=None, height=dp(56), spacing=0)
+        # Уменьшили высоту строки с 56 до 40
+        row = RightClickBox(size_hint_y=None, height=dp(40), spacing=0)
         row._on_right_click = (
             lambda t, i=idx, w=row: self._show_employee_menu(i, t, w)
         )
@@ -513,35 +514,6 @@ class EmployeesTab(BoxLayout):
 
         add_bottom_border(row)
         self.list_layout.add_widget(row)
-
-    def _add_dept_bar(self, name, bg=DEPT_BAR_BG, movable=True):
-        if movable:
-            bar = RightClickBox(size_hint_y=None, height=dp(30),
-                                padding=(0, 0, 0, 0))
-            bar._on_right_click = (
-                lambda t, n=name, w=bar: self._show_department_menu(n, t, w)
-            )
-            bar._on_left_click = ( 
-                lambda t, n=name: self._toggle_dept_collapse(n)
-            )
-        else:
-            bar = BoxLayout(size_hint_y=None, height=dp(30),
-                            padding=(0, 0, 0, 0))
-
-        with bar.canvas.before:
-            Color(*bg)
-            rect = Rectangle(pos=bar.pos, size=bar.size)
-        bar.bind(pos=lambda i, v, r=rect: setattr(r, 'pos', v),
-                 size=lambda i, v, r=rect: setattr(r, 'size', v))
-
-        # Символы [+] и [-] убраны, отображается только название отдела
-        lbl = Label(text=name, color=DEPT_BAR_FG,
-                    font_name=FONT_NAME, font_size=dp(15),
-                    halign='center', valign='middle')
-        lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
-        bar.add_widget(lbl)
-
-        self.list_layout.add_widget(bar)
 
     def _build_header(self):
         self.header_holder.clear_widgets()
@@ -595,7 +567,7 @@ class EmployeesTab(BoxLayout):
             if has_checked:
                 bg = config.ACTIVE_DEPT_BAR_BG
                 fg = config.ACTIVE_DEPT_BAR_FG
-                name = dept  # <--- Убрали звездочку
+                name = dept
             else:
                 bg = config.DEPT_BAR_BG
                 fg = config.DEPT_BAR_FG
@@ -619,7 +591,7 @@ class EmployeesTab(BoxLayout):
                 if has_checked_others:
                     bg_others = config.ACTIVE_DEPT_BAR_BG
                     fg_others = config.ACTIVE_DEPT_BAR_FG
-                    name_others = "Без отдела"  # <--- Убрали звездочку
+                    name_others = "Без отдела"
                 else:
                     bg_others = (0.30, 0.30, 0.34, 1)
                     fg_others = config.DEPT_BAR_FG
@@ -765,6 +737,24 @@ class EmployeesTab(BoxLayout):
             name = name_w.text.strip()
             if not name:
                 return
+                
+            # Проверка на дубликат
+            is_duplicate = False
+            for i, e in enumerate(self.app.data['employees']):
+                if i != idx and e.get('name', '').strip().lower() == name.lower():
+                    is_duplicate = True
+                    break
+            
+            if is_duplicate:
+                err_content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+                err_content.add_widget(Label(text=f"Сотрудник «{name}»\nуже существует!", color=LABEL_LIGHT, halign='center', valign='middle', font_name=FONT_NAME, font_size=dp(15)))
+                ok_btn = Button(text="ОК", size_hint_y=None, height=dp(40), font_name=FONT_NAME, background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1))
+                err_content.add_widget(ok_btn)
+                err = Popup(title="Ошибка", content=err_content, size_hint=(0.45, 0.3), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+                ok_btn.bind(on_press=err.dismiss)
+                err.open()
+                return
+
             new_dept = dept_w.text.strip()
             if new_dept == '(Выбрать отдел)':
                 new_dept = ''
@@ -800,7 +790,7 @@ class EmployeesTab(BoxLayout):
         self.app.data.setdefault('night_flags', {})
         self.app.data.setdefault('overtime_flags', {})
         self.app.data.setdefault('holiday_flags', {})
-        self.app.data.setdefault('no_weekends_flags', {})  # <--- ДОБАВЛЕНО
+        self.app.data.setdefault('no_weekends_flags', {})
         positions = self.app.data['positions']
         if not positions:
             self.app.data['positions'] = list(DEFAULT_POSITIONS)
@@ -833,13 +823,17 @@ class EmployeesTab(BoxLayout):
         list_grid.bind(minimum_height=list_grid.setter('height'))
 
         def toggle_night(name):
-            rebuild_list() # Сбрасываем визуальное состояние чекбокса
+            rebuild_list()
             def _do():
                 flags = self.app.data.setdefault('night_flags', {})
                 flags[name] = not flags.get(name, False)
                 save_data(self.app.data)
                 rebuild_list()
-            ask_password_and_run(DELETE_PASSWORD, _do, description=f"Изменить настройку «Ночные» для\n«{name}»?")
+            ask_password_and_run(
+                DELETE_PASSWORD, _do, 
+                title="Изменение настройки", 
+                description=f"Изменить настройку «Ночные» для\n«{name}»?",
+                btn_text="Изменить")
 
         def toggle_overtime(name):
             rebuild_list()
@@ -848,7 +842,11 @@ class EmployeesTab(BoxLayout):
                 flags[name] = not flags.get(name, False)
                 save_data(self.app.data)
                 rebuild_list()
-            ask_password_and_run(DELETE_PASSWORD, _do, description=f"Изменить настройку «Сверхурочные» для\n«{name}»?")
+            ask_password_and_run(
+                DELETE_PASSWORD, _do, 
+                title="Изменение настройки", 
+                description=f"Изменить настройку «Сверхурочные» для\n«{name}»?",
+                btn_text="Изменить")
 
         def toggle_no_weekends(name):
             rebuild_list()
@@ -857,7 +855,11 @@ class EmployeesTab(BoxLayout):
                 flags[name] = not flags.get(name, False)
                 save_data(self.app.data)
                 rebuild_list()
-            ask_password_and_run(DELETE_PASSWORD, _do, description=f"Изменить настройку «Без вых.» для\n«{name}»?")
+            ask_password_and_run(
+                DELETE_PASSWORD, _do, 
+                title="Изменение настройки", 
+                description=f"Изменить настройку «Без вых.» для\n«{name}»?",
+                btn_text="Изменить")
 
         def delete_pos(ii):
             name = self.app.data['positions'][ii]
@@ -867,7 +869,7 @@ class EmployeesTab(BoxLayout):
                     self.app.data['positions'].pop(ii)
                     self.app.data.get('night_flags', {}).pop(name, None)
                     self.app.data.get('overtime_flags', {}).pop(name, None)
-                    self.app.data.get('no_weekends_flags', {}).pop(name, None) # <--- ДОБАВЛЕНО
+                    self.app.data.get('no_weekends_flags', {}).pop(name, None)
                     self.app.data.get('holidays_only_flags', {}).pop(name, None)
                     save_data(self.app.data)
                     rebuild_list()
@@ -915,9 +917,19 @@ class EmployeesTab(BoxLayout):
                 if not new_name or new_name == old_name:
                     p.dismiss()
                     return
+
+                # Проверка на дубликат
                 if new_name in self.app.data['positions']:
                     p.dismiss()
+                    err_content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+                    err_content.add_widget(Label(text=f"Должность «{new_name}»\nуже существует!", color=LABEL_LIGHT, halign='center', valign='middle', font_name=FONT_NAME, font_size=dp(15)))
+                    ok_btn = Button(text="ОК", size_hint_y=None, height=dp(40), font_name=FONT_NAME, background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1))
+                    err_content.add_widget(ok_btn)
+                    err = Popup(title="Ошибка", content=err_content, size_hint=(0.45, 0.3), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+                    ok_btn.bind(on_press=err.dismiss)
+                    err.open()
                     return
+                    
                 self.app.data['positions'][ii] = new_name
 
                 flags_n = self.app.data.setdefault('night_flags', {})
@@ -928,9 +940,9 @@ class EmployeesTab(BoxLayout):
                 old_flag_o = flags_o.pop(old_name, False)
                 flags_o[new_name] = old_flag_o
 
-                flags_nw = self.app.data.setdefault('no_weekends_flags', {}) # <--- ДОБАВЛЕНО
-                old_flag_nw = flags_nw.pop(old_name, False) # <--- ДОБАВЛЕНО
-                flags_nw[new_name] = old_flag_nw # <--- ДОБАВЛЕНО
+                flags_nw = self.app.data.setdefault('no_weekends_flags', {})
+                old_flag_nw = flags_nw.pop(old_name, False)
+                flags_nw[new_name] = old_flag_nw
 
                 for emp in self.app.data['employees']:
                     if emp.get('position', '') == old_name:
@@ -988,7 +1000,6 @@ class EmployeesTab(BoxLayout):
                 row.add_widget(overtime_box)
                 row.add_widget(vsep(color=LABEL_LIGHT))
 
-                # <--- ДОБАВЛЕНО: ЧЕКБОКС "БЕЗ ВЫХОДНЫХ"
                 no_weekends_on = bool(self.app.data.get('no_weekends_flags', {}).get(p, False))
                 no_weekends_box = BoxLayout(size_hint_x=None, width=dp(150), spacing=4)
                 cb3 = CheckBox(active=no_weekends_on, size_hint_x=None, width=dp(30),
@@ -1003,7 +1014,6 @@ class EmployeesTab(BoxLayout):
                                                outline_width=1, valign='middle'))
                 row.add_widget(no_weekends_box)
                 row.add_widget(vsep(color=LABEL_LIGHT))
-                # -------------------------------------
 
                 pos_lbl = Label(text=p, color=(1, 1, 1, 1),
                                 font_name=FONT_NAME,
@@ -1040,13 +1050,23 @@ class EmployeesTab(BoxLayout):
             txt = new_pos_wrap.text.strip()
             if not txt:
                 return
+
+            # Проверка на дубликат
             if txt in self.app.data['positions']:
+                err_content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+                err_content.add_widget(Label(text=f"Должность «{txt}»\nуже существует!", color=LABEL_LIGHT, halign='center', valign='middle', font_name=FONT_NAME, font_size=dp(15)))
+                ok_btn = Button(text="ОК", size_hint_y=None, height=dp(40), font_name=FONT_NAME, background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1))
+                err_content.add_widget(ok_btn)
+                err = Popup(title="Ошибка", content=err_content, size_hint=(0.45, 0.3), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+                ok_btn.bind(on_press=err.dismiss)
+                err.open()
                 new_pos_wrap.text = ''
                 return
+                
             self.app.data['positions'].append(txt)
             self.app.data.setdefault('night_flags', {}).setdefault(txt, False)
             self.app.data.setdefault('overtime_flags', {}).setdefault(txt, False)
-            self.app.data.setdefault('no_weekends_flags', {}).setdefault(txt, False) # <--- ДОБАВЛЕНО
+            self.app.data.setdefault('no_weekends_flags', {}).setdefault(txt, False)
             save_data(self.app.data)
             new_pos_wrap.text = ''
             rebuild_list()
@@ -1096,10 +1116,8 @@ class EmployeesTab(BoxLayout):
         header.add_widget(h_num)
         header.add_widget(vsep(color=LABEL_LIGHT))
         
-        # ... выше идет h_num ...
-        
         h_dept = Label(text="Название отдела", bold=True, size_hint_x=2.2, color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='center', valign='middle')
-        h_dept.bind(size=lambda i, v: setattr(i, 'text_size', (v[0], v[1]))) # Убрали -dp(10) для точного центрирования
+        h_dept.bind(size=lambda i, v: setattr(i, 'text_size', (v[0], v[1])))
         header.add_widget(h_dept)
         header.add_widget(vsep(color=LABEL_LIGHT))
         
@@ -1478,6 +1496,7 @@ class EmployeesTab(BoxLayout):
                     missing.append("Должность")
                 if not new_fio:
                     missing.append("ФИО руководителя")
+                    
                 if missing:
                     err = BoxLayout(orientation='vertical',
                                     spacing=10, padding=10)
@@ -1500,9 +1519,18 @@ class EmployeesTab(BoxLayout):
                     err_btn.bind(on_press=err_popup.dismiss)
                     bind_enter_key(err_popup, err_popup.dismiss)
                     err_popup.open()
+                    return
 
-                if (new_name != old_name
-                        and new_name in self.app.data['departments']):
+                # Проверка на дубликат
+                if (new_name != old_name and new_name in self.app.data['departments']):
+                    p.dismiss()
+                    err_content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+                    err_content.add_widget(Label(text=f"Отдел «{new_name}»\nуже существует!", color=LABEL_LIGHT, halign='center', valign='middle', font_name=FONT_NAME, font_size=dp(15)))
+                    ok_btn = Button(text="ОК", size_hint_y=None, height=dp(40), font_name=FONT_NAME, background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1))
+                    err_content.add_widget(ok_btn)
+                    err = Popup(title="Ошибка", content=err_content, size_hint=(0.45, 0.3), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+                    ok_btn.bind(on_press=err.dismiss)
+                    err.open()
                     return
 
                 sp = self.app.data.setdefault('signer_positions',
@@ -1627,7 +1655,7 @@ class EmployeesTab(BoxLayout):
 
         lbl = Label(text=name, color=fg,
                     font_name=FONT_NAME, font_size=dp(15),
-                    bold=True, # Жирный шрифт для лучшей читаемости
+                    bold=True,
                     halign='center', valign='middle')
         lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
         bar.add_widget(lbl)

@@ -12,20 +12,17 @@ if getattr(sys, 'frozen', False) and sys.platform == 'win32':
         mutex_name = "TabelAppMutex_1_1_7"
         mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
         
-        # 183 = ERROR_ALREADY_EXISTS
         if ctypes.windll.kernel32.GetLastError() == 183: 
-            # Показываем системное окно Windows
             ctypes.windll.user32.MessageBoxW(
                 0, 
                 "Программа «Табель учёта рабочего времени» уже запущена.\n\n"
                 "Пожалуйста, переключитесь на уже открытое окно программы.", 
                 "Внимание", 
-                0x00000040 | 0x00000000 # Иконка информации (i) и кнопка ОК
+                0x00000040 | 0x00000000
             )
             sys.exit(0)
     except Exception:
         pass
-# ----------------------------------------
 
 if sys.platform == 'win32':
     try:
@@ -57,19 +54,14 @@ from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.metrics import dp
 from kivy.graphics import Color, Rectangle
-from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.textinput import TextInput
-from ui_widgets import HoverButton as Button
-from kivy.uix.label import Label
-from kivy.uix.popup import Popup
 from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelItem
 from kivy.uix.widget import Widget
-from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.label import Label
+from kivy.uix.popup import Popup
+from ui_widgets import HoverButton as Button
 
-from config import (DATA_FILE, decorate_title, apply_app_icon,
-                    FONT_NAME, LABEL_LIGHT, APP_VERSION, 
-                    DEFAULT_DIRECTOR, DEFAULT_ORG)
+from config import (DATA_FILE, decorate_title, apply_app_icon, FONT_NAME, LABEL_LIGHT, APP_VERSION)
 import data_utils
 from data_utils import load_data, save_data
 
@@ -78,18 +70,15 @@ from tab_timesheet import TimesheetTab
 from tab_report import ReportTab
 from tab_about import AboutTab
 from ui_helpers import bind_enter_key
-from ui_widgets import HoverButton  # <--- ДОБАВИТЬ
+from ui_widgets import HoverButton
 
 TOPBAR_H    = dp(52)
 EXIT_BTN_W  = dp(120)
 EXIT_BTN_H  = dp(40)
 THEME_BTN_W = dp(100)
 
-
 class TabelApp(App):
     title = "Табель учёта рабочего времени"
-    _dir_save_ev = None
-    _org_save_ev = None
 
     def on_start(self):
         try:
@@ -98,48 +87,21 @@ class TabelApp(App):
         except Exception:
             pass
 
-    def _on_director_change(self, inst, value):
-        self.data['director_name'] = value
-        if self._dir_save_ev:
-            self._dir_save_ev.cancel()
-        self._dir_save_ev = Clock.schedule_once(
-            lambda *a: save_data(self.data), 0.5)
-        try:
-            self.rep_tab.update_preview()
-        except Exception:
-            pass
-
-    def _on_org_change(self, inst, value):
-        self.data['organization'] = value
-        if self._org_save_ev:
-            self._org_save_ev.cancel()
-        self._org_save_ev = Clock.schedule_once(
-            lambda *a: save_data(self.data), 0.5)
-        try:
-            self.rep_tab.update_preview()
-        except Exception:
-            pass
-
     def show_theme_dialog(self):
         from config import THEME_LABELS, CURRENT_THEME
         current = CURRENT_THEME
 
-        # Уменьшаем внутренние отступы и задаем компактную ширину
         content = BoxLayout(orientation='vertical', spacing=8, padding=(20, 15, 20, 15))
-        
-        # Верхняя распорка для центрирования
         content.add_widget(Widget(size_hint_y=1))
 
         theme_buttons = {}
         for key, label in THEME_LABELS.items():
             is_current = (key == current)
-            
-            # Если тема текущая - берем оранжевый цвет, иначе темно-серый
             bg_color = config.ACTIVE_DEPT_BAR_BG if is_current else (0.20, 0.20, 0.24, 1)
             fg_color = config.ACTIVE_DEPT_BAR_FG if is_current else (1, 1, 1, 1)
             
             btn = HoverButton(
-                text=label,  # Убрали символ '● '
+                text=label,
                 size_hint_y=None, height=dp(44),
                 font_name=FONT_NAME, font_size=dp(15),
                 bold=is_current,
@@ -150,26 +112,16 @@ class TabelApp(App):
             theme_buttons[key] = btn
             content.add_widget(btn)
 
-        # Отступ перед кнопкой Отмена
         content.add_widget(Widget(size_hint_y=None, height=dp(10)))
-
-        # Кнопка Отмена с фиксированным красным цветом
         close_btn = HoverButton(
             text="Отмена", 
             size_hint_y=None, height=dp(44),
-            color=(1, 1, 1, 1), 
-            font_name=FONT_NAME,
-            font_size=dp(16), 
-            bold=True,
-            background_normal='',
-            background_color=(0.75, 0.25, 0.25, 1) # Темно-красный
+            color=(1, 1, 1, 1), font_name=FONT_NAME, font_size=dp(16), bold=True,
+            background_normal='', background_color=(0.75, 0.25, 0.25, 1)
         )
         content.add_widget(close_btn)
-
-        # Нижняя распорка для центрирования
         content.add_widget(Widget(size_hint_y=1))
 
-        # Фиксированные размеры, чтобы кнопки всегда помещались
         popup = Popup(title="Тема оформления", content=content,
                       size_hint=(None, None), size=(dp(350), dp(420)),
                       title_color=LABEL_LIGHT, title_font=FONT_NAME,
@@ -205,10 +157,8 @@ class TabelApp(App):
             font_name=FONT_NAME, font_size=dp(15),
             outline_color=(0, 0, 0, 1), outline_width=1))
         btns = BoxLayout(size_hint_y=None, height=dp(42), spacing=10)
-        yes = Button(text="Перезапустить",
-                     background_color=config.EXIT_BG,
-                     color=(1, 1, 1, 1), font_name=FONT_NAME,
-                     font_size=dp(15), bold=True)
+        yes = Button(text="Перезапустить", background_color=config.EXIT_BG,
+                     color=(1, 1, 1, 1), font_name=FONT_NAME, font_size=dp(15), bold=True)
         no = Button(text="Позже", color=(1, 1, 1, 1),
                     font_name=FONT_NAME, font_size=dp(15), bold=True)
         btns.add_widget(yes)
@@ -267,8 +217,7 @@ class TabelApp(App):
             pass
 
         for delay in (0.3, 0.8, 1.5):
-            Clock.schedule_once(
-                lambda dt: apply_app_icon(self.title), delay)
+            Clock.schedule_once(lambda dt: apply_app_icon(self.title), delay)
 
         def _maximize_window_kivy(dt=0):
             try:
@@ -311,76 +260,6 @@ class TabelApp(App):
         top_bar.bind(pos=lambda i, v, r=_bar_rect: setattr(r, 'pos', v),
                      size=lambda i, v, r=_bar_rect: setattr(r, 'size', v))
 
-        # ==========================================
-        # БЛОК ДЛЯ ДИРЕКТОРА И ОРГАНИЗАЦИИ (слева, по центру)
-        # ==========================================
-        fields_box = BoxLayout(orientation='horizontal', spacing=12, 
-                               size_hint=(None, 1), width=dp(680))
-
-        # Директор
-        dir_anchor = AnchorLayout(anchor_x='left', anchor_y='center', 
-                                  size_hint=(None, 1), width=dp(320))
-        dir_row = BoxLayout(size_hint=(None, None), size=(dp(320), dp(30)), spacing=6)
-        
-        dir_lbl = Label(text="Директор:", color=LABEL_LIGHT,
-                        font_name=FONT_NAME, font_size=dp(14),
-                        size_hint_x=None, width=dp(75),
-                        halign='right', valign='middle')
-        dir_lbl.bind(size=lambda i, v: setattr(i, 'text_size', v))
-        
-        director_wrap = TextInput(
-            text=self.data.get('director_name', DEFAULT_DIRECTOR),
-            multiline=False,
-            font_size=dp(14), font_name=FONT_NAME,
-            foreground_color=(0.05, 0.05, 0.05, 1),
-            background_color=(1, 1, 1, 1),
-            cursor_color=(0.10, 0.30, 0.70, 1),
-            cursor_width=dp(2),
-            selection_color=(0.20, 0.45, 0.90, 0.40),
-            padding=[dp(8), dp(7), dp(8), dp(7)],
-            size_hint=(None, None), size=(dp(235), dp(30)),
-        )
-        director_wrap.bind(text=self._on_director_change)
-        
-        dir_row.add_widget(dir_lbl)
-        dir_row.add_widget(director_wrap)
-        dir_anchor.add_widget(dir_row)
-        fields_box.add_widget(dir_anchor)
-
-        # Организация
-        org_anchor = AnchorLayout(anchor_x='left', anchor_y='center', 
-                                  size_hint=(None, 1), width=dp(340))
-        org_row = BoxLayout(size_hint=(None, None), size=(dp(340), dp(30)), spacing=6)
-        
-        org_lbl = Label(text="Организация:", color=LABEL_LIGHT,
-                        font_name=FONT_NAME, font_size=dp(14),
-                        size_hint_x=None, width=dp(95),
-                        halign='right', valign='middle')
-        org_lbl.bind(size=lambda i, v: setattr(i, 'text_size', v))
-        
-        org_wrap = TextInput(
-            text=self.data.get('organization', DEFAULT_ORG),
-            multiline=False,
-            font_size=dp(14), font_name=FONT_NAME,
-            foreground_color=(0.05, 0.05, 0.05, 1),
-            background_color=(1, 1, 1, 1),
-            cursor_color=(0.10, 0.30, 0.70, 1),
-            cursor_width=dp(2),
-            selection_color=(0.20, 0.45, 0.90, 0.40),
-            padding=[dp(8), dp(7), dp(8), dp(7)],
-            size_hint=(None, None), size=(dp(235), dp(30)),
-        )
-        org_wrap.bind(text=self._on_org_change)
-        
-        org_row.add_widget(org_lbl)
-        org_row.add_widget(org_wrap)
-        org_anchor.add_widget(org_row)
-        fields_box.add_widget(org_anchor)
-
-        self.director_wrap = director_wrap
-        self.org_wrap = org_wrap
-
-        top_bar.add_widget(fields_box)
         top_bar.add_widget(Widget()) # Распорка, прижимающая кнопки вправо
 
         right_box = BoxLayout(size_hint_x=None, width=THEME_BTN_W + EXIT_BTN_W + dp(6),
@@ -444,18 +323,6 @@ class TabelApp(App):
         root_tabs.bind(current_tab=on_tab_switch)
         Clock.schedule_once(lambda *a: root_tabs.switch_to(emp_tab), 0.2)
         Clock.schedule_interval(self._check_external_updates, 3.0)
-
-        def _update_director_visibility(*_):
-            try:
-                cur = root_tabs.current_tab
-                show = cur is not None and cur.text == "Рабочий персонал"
-            except Exception:
-                show = False
-            fields_box.opacity = 1 if show else 0
-            fields_box.disabled = not show
-
-        root_tabs.bind(current_tab=_update_director_visibility)
-        Clock.schedule_once(_update_director_visibility, 0.05)
 
         root = BoxLayout(orientation='vertical')
         root.add_widget(top_bar)
