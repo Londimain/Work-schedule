@@ -1,6 +1,9 @@
 # tab_report.py
 # -*- coding: utf-8 -*-
 import config, webbrowser
+import time
+import sys
+import traceback
 from datetime import datetime
 from calendar import monthrange
 
@@ -17,11 +20,11 @@ from kivy.uix.popup import Popup
 from kivy.graphics import Color, Rectangle
 from kivy.clock import Clock
 from kivy.uix.behaviors import ButtonBehavior
+from kivy.uix.button import Button as StdButton
 
 from config import (FONT_NAME, LABEL_LIGHT, MONTHS, YEARS, SPINNER_BG, SPINNER_FG, 
                     RIGHT_COLUMNS, DEFAULT_ORG, DEFAULT_ENERGETIC, DEFAULT_DIRECTOR)
 
-# Импортируем напрямую из data_storage, чтобы VS Code не ругался
 from data_storage import get_local_signers, set_local_signers
 from data_utils import (classify_day, analyze_row, apply_overtime, fmt_hours, 
                         calc_norm_hours, set_local_show_legend, get_local_show_legend,
@@ -34,8 +37,21 @@ from config import DELETE_PASSWORD
 from ui_widgets import HoverButton as Button, LightSpinnerOption
 from excel_export import export_full_excel, export_short_excel
 
+# ==============================================================================
+# БЛОК ДЛЯ ОТЛАДКИ (DEBUG)
+# ==============================================================================
+def dbg(msg):
+    """Выводит сообщение с временной меткой"""
+    print(f"[DEBUG {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d}] {msg}")
 
-# --- СПЕЦИАЛЬНЫЙ КЛАСС ДЛЯ СТРОКИ ТАБЛИЦЫ ---
+# Перехватчик необработанных исключений, чтобы программа не падала молча
+def custom_excepthook(exc_type, exc_value, exc_traceback):
+    print("\n!!! НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ !!!")
+    traceback.print_exception(exc_type, exc_value, exc_traceback)
+    print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
+sys.excepthook = custom_excepthook
+# ==============================================================================
+
 class HoverClickableRow(ButtonBehavior, BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -50,6 +66,14 @@ class HoverClickableRow(ButtonBehavior, BoxLayout):
         Window.bind(mouse_pos=self._on_mouse_pos)
         self.bind(parent=self._on_parent)
 
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            for child in self.walk():
+                if isinstance(child, (Button, StdButton)) and child != self:
+                    if child.collide_point(*touch.pos):
+                        return super(ButtonBehavior, self).on_touch_down(touch)
+        return super().on_touch_down(touch)
+
     def _on_parent(self, instance, parent):
         if parent is None:
             from kivy.core.window import Window
@@ -62,9 +86,41 @@ class HoverClickableRow(ButtonBehavior, BoxLayout):
         self._bg_rect.pos = self.pos
         self._bg_rect.size = self.size
 
+    def _is_covered(self):
+        from kivy.core.window import Window
+        from kivy.uix.popup import Popup
+        from kivy.uix.dropdown import DropDown
+        
+        top_modal = None
+        for child in Window.children:
+            if isinstance(child, (Popup, DropDown)):
+                top_modal = child
+                break
+                
+        if top_modal is None:
+            return False
+            
+        w = self
+        depth = 0
+        # ОГРАНИЧЕНИЕ ГЛУБИНЫ, ЧТОБЫ НЕ УЙТИ В БЕСКОНЕЧНЫЙ ЦИКЛ ПРИ УНИЧТОЖЕНИИ ВИДЖЕТА
+        while w and depth < 50:
+            if w == top_modal:
+                return False
+            w = w.parent
+            depth += 1
+            
+        return True
+
     def _on_mouse_pos(self, window, pos):
         if not self.get_root_window() or self.disabled:
             return
+            
+        if self._is_covered():
+            if self._hovering:
+                self._hovering = False
+                self._update_bg()
+            return
+            
         try:
             wx, wy = self.to_window(self.x, self.y)
             if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
@@ -88,7 +144,6 @@ class HoverClickableRow(ButtonBehavior, BoxLayout):
             self._bg_color.rgba = (0.15, 0.15, 0.18, 1)
 # -------------------------------------------------------------------------
 
-
 def format_name(name):
     if not name:
         return ''
@@ -106,6 +161,10 @@ class ReportTab(BoxLayout):
         self.app = app
         self._org_save_ev = None
         self._dir_save_ev = None
+        self.active_signers_popup = None
+        self.active_signers_rebuild = None
+        self.active_picker_popup = None
+        self.active_picker_rebuild = None
 
         with self.canvas.before:
             Color(*config.TABLE_BG)
@@ -117,7 +176,6 @@ class ReportTab(BoxLayout):
         Clock.schedule_once(lambda *a: self.update_preview(), 0.3)
         
     def _migrate_signers_once(self):
-        """Одноразовая миграция: добавляет локальных подписантов в общую базу."""
         try:
             from data_storage import load_local, save_local
             import json as _json
@@ -149,7 +207,7 @@ class ReportTab(BoxLayout):
                         shared_keys.add((n, p))
                         added = True
                 if added:
-                    save_data(self.app.data)
+                    self.app.safe_save(self.app.data)
 
             local['signers_migrated'] = True
             save_local(local)
@@ -160,14 +218,14 @@ class ReportTab(BoxLayout):
         self.app.data['organization'] = value
         if self._org_save_ev:
             self._org_save_ev.cancel()
-        self._org_save_ev = Clock.schedule_once(lambda *a: save_data(self.app.data), 0.5)
+        self._org_save_ev = Clock.schedule_once(lambda *a: self.app.safe_save(self.app.data), 0.5)
         Clock.schedule_once(lambda *a: self.update_preview(), 0.1)
 
     def _on_dir_change(self, inst, value):
         self.app.data['director_name'] = value
         if self._dir_save_ev:
             self._dir_save_ev.cancel()
-        self._dir_save_ev = Clock.schedule_once(lambda *a: save_data(self.app.data), 0.5)
+        self._dir_save_ev = Clock.schedule_once(lambda *a: self.app.safe_save(self.app.data), 0.5)
         Clock.schedule_once(lambda *a: self.update_preview(), 0.1)
 
     def _build(self):
@@ -219,6 +277,19 @@ class ReportTab(BoxLayout):
                                  background_color=(0.20, 0.45, 0.55, 1), color=(1, 1, 1, 1))
         excel_short_btn.bind(on_press=lambda *a: export_short_excel(self))
         top.add_widget(excel_short_btn)
+
+        admin_btn = Button(text="Выгрузить всё", size_hint_x=None, width=dp(150),
+                           font_name=FONT_NAME, font_size=dp(15), bold=True,
+                           background_color=(0.4, 0.5, 0.7, 1), color=(1, 1, 1, 1))
+        
+        admin_btn.bind(on_press=lambda *a: ask_password_and_run(
+            DELETE_PASSWORD, 
+            self.show_admin_export_dialog,
+            title="Массовая выгрузка",
+            btn_text="Выгрузить",
+            password_prompt="Введите пароль для выгрузки ВСЕХ отделов:"
+        ))
+        top.add_widget(admin_btn)
 
         self.add_widget(top)
 
@@ -277,6 +348,7 @@ class ReportTab(BoxLayout):
         self.add_widget(scroll)
 
     def show_signers_popup(self, *args):
+        dbg("show_signers_popup: Открытие окна подписантов")
         self._migrate_signers_once()
 
         content = BoxLayout(orientation='vertical', spacing=10, padding=10)
@@ -308,7 +380,6 @@ class ReportTab(BoxLayout):
         add_row.add_widget(add_btn)
         content.add_widget(add_row)
 
-        # --- ЗАГОЛОВОК ТАБЛИЦЫ ---
         table_header = BoxLayout(size_hint_y=None, height=dp(30), spacing=0)
         
         h_chk = BoxLayout(size_hint_x=None, width=dp(40))
@@ -357,10 +428,14 @@ class ReportTab(BoxLayout):
             self.update_preview()
 
         def open_edit_local_dialog(idx, signers, rebuild_cb):
+            if getattr(open_edit_local_dialog, 'active', False):
+                return
+            open_edit_local_dialog.active = True
+
             s = signers[idx]
             edit_content = BoxLayout(orientation='vertical', spacing=10, padding=(30, 20, 30, 20))
 
-            edit_content.add_widget(Widget(size_hint_y=1)) # Опускаем поля
+            edit_content.add_widget(Widget(size_hint_y=1))
 
             lbl_pos = Label(text="Должность:", color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_y=None, height=dp(20), halign='center', valign='middle')
             lbl_pos.bind(size=lambda i,v: setattr(i, 'text_size', v))
@@ -389,44 +464,70 @@ class ReportTab(BoxLayout):
             p = Popup(title="Редактирование подписанта", content=edit_content, size_hint=(0.45, 0.45),
                       title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
 
+            def on_p_dismiss(*args):
+                dbg("open_edit_local_dialog: окно закрыто (on_p_dismiss)")
+                open_edit_local_dialog.active = False
+            p.bind(on_dismiss=on_p_dismiss)
+
+            saved = {'status': False}
+
             def do_save(*a):
+                if saved['status']:
+                    return
+                saved['status'] = True
+                dbg("do_save: нажата кнопка Сохранить")
                 new_n = name_in.text.strip()
                 new_p = pos_in.text.strip()
                 old_n = s.get('name', '')
                 old_p = s.get('position', '')
                 
                 if new_n and new_p:
-                    signers[idx]['name'] = new_n
-                    signers[idx]['position'] = new_p
-                    set_local_signers(signers)
+                    dbg("do_save: данные валидны, закрываем окно...")
+                    p.dismiss() 
                     
-                    shared = self.app.data.setdefault('shared_signers', [])
-                    for sh in shared:
-                        if sh.get('name') == old_n and sh.get('position') == old_p:
-                            sh['name'] = new_n
-                            sh['position'] = new_p
-                            break
-                    save_data(self.app.data)
+                    def _process_save(dt):
+                        dbg("do_save._process_save: сохранение данных...")
+                        signers[idx]['name'] = new_n
+                        signers[idx]['position'] = new_p
+                        set_local_signers(signers)
+                        
+                        shared = self.app.data.setdefault('shared_signers', [])
+                        for sh in shared:
+                            if sh.get('name') == old_n and sh.get('position') == old_p:
+                                sh['name'] = new_n
+                                sh['position'] = new_p
+                                break
+                        try:
+                            self.app.safe_save(self.app.data)
+                        except Exception as e:
+                            print("Save error:", e)
+                        
+                        self.update_preview()
+                        rebuild_cb()
+                        dbg("do_save._process_save: сохранение завершено.")
                     
-                    self.update_preview()
-                    rebuild_cb()
-                p.dismiss()
+                    Clock.schedule_once(_process_save, 0) 
+                else:
+                    p.dismiss()
 
             save_b.bind(on_press=do_save)
             cancel_b.bind(on_press=p.dismiss)
             pos_in.bind(on_text_validate=do_save)
             name_in.bind(on_text_validate=do_save)
+            
+            dbg("open_edit_local_dialog: привязка bind_enter_key")
             bind_enter_key(p, do_save)
-            p.open()
+            
+            dbg("open_edit_local_dialog: вызов p.open()")
+            Clock.schedule_once(lambda dt: p.open(), 0.1)
 
-        def rebuild_list():
+        def rebuild_list(from_update=False):
             grid.clear_widgets()
 
             shared = self.app.data.get('shared_signers', [])
             shared_keys = {(sh.get('name', '').strip(), sh.get('position', '').strip()) for sh in shared}
             local_list = get_local_signers()
             
-            # --- УДАЛЕНИЕ ДУБЛИКАТОВ ПРИ ЗАГРУЗКЕ ---
             cleaned = []
             seen = set()
             for s in local_list:
@@ -439,7 +540,8 @@ class ReportTab(BoxLayout):
                     
             if len(cleaned) != len(local_list):
                 set_local_signers(cleaned)
-                self.update_preview()
+                if not from_update:
+                    self.update_preview()
 
             signers = cleaned
 
@@ -450,7 +552,6 @@ class ReportTab(BoxLayout):
                 row = BoxLayout(size_hint_y=None, height=dp(36), spacing=0)
                 add_bottom_border(row, color=(0.4, 0.4, 0.4, 1))
 
-                # Галочка
                 c_box = BoxLayout(size_hint_x=None, width=dp(40))
                 add_left_border(c_box, color=(0.4, 0.4, 0.4, 1))
                 add_right_border(c_box, color=(0.4, 0.4, 0.4, 1))
@@ -464,7 +565,6 @@ class ReportTab(BoxLayout):
                 c_box.add_widget(cb)
                 row.add_widget(c_box)
 
-                # Должность
                 p_box = BoxLayout(size_hint_x=1, padding=(dp(5), 0, 0, 0))
                 add_right_border(p_box, color=(0.4, 0.4, 0.4, 1))
                 lbl_pos = Label(text=orig_p, font_size=dp(14), font_name=FONT_NAME, halign='left', valign='middle', color=LABEL_LIGHT)
@@ -472,7 +572,6 @@ class ReportTab(BoxLayout):
                 p_box.add_widget(lbl_pos)
                 row.add_widget(p_box)
 
-                # ФИО
                 n_box = BoxLayout(size_hint_x=1, padding=(dp(5), 0, 0, 0))
                 add_right_border(n_box, color=(0.4, 0.4, 0.4, 1))
                 lbl_name = Label(text=orig_n, font_size=dp(14), font_name=FONT_NAME, halign='left', valign='middle', color=LABEL_LIGHT)
@@ -480,14 +579,11 @@ class ReportTab(BoxLayout):
                 n_box.add_widget(lbl_name)
                 row.add_widget(n_box)
 
-                # Действия
                 a_box = BoxLayout(size_hint_x=None, width=dp(200), spacing=dp(4), padding=(dp(4), dp(2)))
                 add_right_border(a_box, color=(0.4, 0.4, 0.4, 1))
                 
                 edit_btn = Button(text="Изменить", background_color=(0.35, 0.55, 0.85, 1), color=(1, 1, 1, 1), font_name=FONT_NAME, font_size=dp(12))
-                edit_btn.bind(on_press=lambda *a, idx=i: open_edit_local_dialog(idx, signers, rebuild_list))
-                a_box.add_widget(edit_btn)
-
+                # ...
                 del_btn = Button(text="Удалить", background_color=(0.8, 0.2, 0.2, 1), color=(1, 1, 1, 1), font_name=FONT_NAME, font_size=dp(12))
                 def make_del(idx):
                     def delete(inst):
@@ -496,20 +592,20 @@ class ReportTab(BoxLayout):
                         s_p = (s_item.get('position') or '').strip()
 
                         def do_delete():
+                            # Удаляем ТОЛЬКО из локального списка
                             signers.pop(idx)
                             set_local_signers(signers)
                             
-                            sh_list = self.app.data.get('shared_signers', [])
-                            new_sh = [sh for sh in sh_list if not (sh.get('name', '').strip() == s_n and sh.get('position', '').strip() == s_p)]
-                            self.app.data['shared_signers'] = new_sh
-                            save_data(self.app.data)
-                            
-                            self.update_preview()
-                            rebuild_list()
+                            def _process_delete(dt):
+                                # Сохранение в базу (self.app.safe_save) больше не вызывается,
+                                # так как общая база не меняется.
+                                self.update_preview()
+                                rebuild_list()
+                            Clock.schedule_once(_process_delete, 0)
 
                         ask_password_and_run(
                             DELETE_PASSWORD, do_delete, 
-                            description=f"Удалить подписанта «{s_p} — {s_n}»\nиз базы и списка?"
+                            description=f"Убрать подписанта «{s_p} — {s_n}»\nиз вашего списка?"
                         )
                     return delete
                 del_btn.bind(on_press=make_del(i))
@@ -524,7 +620,6 @@ class ReportTab(BoxLayout):
             if pos and nm:
                 signers = get_local_signers()
                 
-                # --- ПРОВЕРКА НА ДУБЛИКАТ ---
                 if any((s.get('name', '').strip() == nm and s.get('position', '').strip() == pos) for s in signers):
                     err_content = BoxLayout(orientation='vertical', spacing=10, padding=10)
                     err_content.add_widget(Label(
@@ -532,28 +627,34 @@ class ReportTab(BoxLayout):
                         color=LABEL_LIGHT, halign='center', valign='middle',
                         font_name=FONT_NAME, font_size=dp(14)
                     ))
-                    ok_btn = Button(text="ОК", size_hint_y=None, height=dp(40), font_name=FONT_NAME, background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1))
+                    ok_btn = StdButton(text="ОК", size_hint_y=None, height=dp(40), font_name=FONT_NAME, background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1))
                     err_content.add_widget(ok_btn)
                     err_popup = Popup(title="Дубликат", content=err_content, size_hint=(0.45, 0.3), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
                     ok_btn.bind(on_press=err_popup.dismiss)
-                    bind_enter_key(err_popup, err_popup.dismiss) # <--- ДОБАВЛЕНО ЗДЕСЬ
+                    bind_enter_key(err_popup, err_popup.dismiss)
                     err_popup.open()
                     return
-                # -----------------------------
-
-                signers.append({'name': nm, 'position': pos, 'active': True})
-                save_signers(signers)
 
                 shared = self.app.data.setdefault('shared_signers', [])
                 if not any((sh.get('name', '').strip() == nm and sh.get('position', '').strip() == pos) for sh in shared):
                     shared.append({'name': nm, 'position': pos})
-                    save_data(self.app.data)
+                    
+                    def _process_add(dt):
+                        try:
+                            self.app.safe_save(self.app.data)
+                        except Exception as e:
+                            print("Save error:", e)
+                    Clock.schedule_once(_process_add, 0)
+
+                signers.append({'name': nm, 'position': pos, 'active': True})
+                save_signers(signers)
 
                 new_pos.text = ""
                 new_name.text = ""
                 rebuild_list()
 
         def open_signer_picker(*args):
+            dbg("open_signer_picker: Открытие окна выбора из базы")
             candidates = set()
             for s in self.app.data.get('shared_signers', []):
                 nm = (s.get('name') or '').strip()
@@ -563,8 +664,6 @@ class ReportTab(BoxLayout):
                 nm = (s.get('name') or '').strip()
                 pos = (s.get('position') or '').strip()
                 if pos and nm: candidates.add((pos, nm))
-
-            sorted_cands = sorted(list(candidates), key=lambda x: (x[0].lower(), x[1].lower()))
 
             pick_content = BoxLayout(orientation='vertical', spacing=5, padding=5)
             
@@ -607,9 +706,15 @@ class ReportTab(BoxLayout):
 
             picker = Popup(title="Выбор подписанта из общей базы", content=pick_content, size_hint=(0.75, 0.7), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
 
+            editing = {'active': False}
+
             def edit_shared(p_pos, p_nm):
+                if editing['active']:
+                    return
+                editing['active'] = True
+                dbg(f"edit_shared: ВЫЗОВ ДЛЯ {p_pos} - {p_nm}")
+
                 edit_content = BoxLayout(orientation='vertical', spacing=10, padding=(30, 20, 30, 20))
-                
                 edit_content.add_widget(Widget(size_hint_y=1))
 
                 lbl_pos = Label(text="Должность:", color=LABEL_LIGHT, font_name=FONT_NAME, size_hint_y=None, height=dp(20), halign='center', valign='middle')
@@ -624,7 +729,6 @@ class ReportTab(BoxLayout):
                 edit_content.add_widget(pos_in)
                 edit_content.add_widget(lbl_name)
                 edit_content.add_widget(name_in)
-                
                 edit_content.add_widget(Widget(size_hint_y=1))
 
                 btns = BoxLayout(size_hint_y=None, height=dp(44), spacing=10)
@@ -635,63 +739,135 @@ class ReportTab(BoxLayout):
 
                 ep = Popup(title="Редактирование в базе", content=edit_content, size_hint=(0.45, 0.45), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
 
+                def on_ep_dismiss(*args):
+                    dbg("edit_shared: окно EP закрыто (on_ep_dismiss)")
+                    editing['active'] = False
+                    if not picker._window:
+                        self.active_picker_popup = picker
+                        self.active_picker_rebuild = rebuild_from_db
+                        # Возвращаем picker с задержкой
+                        Clock.schedule_once(lambda dt: picker.open(), 0.15)
+                        
+                ep.bind(on_dismiss=on_ep_dismiss)
+
+                saved = {'status': False}
+
                 def do_save(*a):
+                    if saved['status']:
+                        return
+                    saved['status'] = True
+                    dbg("edit_shared: нажата кнопка Сохранить (do_save)")
                     n_new = name_in.text.strip()
                     p_new = pos_in.text.strip()
                     if not n_new or not p_new: return
                     
-                    shared = self.app.data.get('shared_signers', [])
-                    for sh in shared:
-                        if (sh.get('name') or '').strip() == p_nm and (sh.get('position') or '').strip() == p_pos:
-                            sh['name'] = n_new
-                            sh['position'] = p_new
-                    save_data(self.app.data)
-
-                    local = get_local_signers()
-                    changed = False
-                    for s in local:
-                        if (s.get('name') or '').strip() == p_nm and (s.get('position') or '').strip() == p_pos:
-                            s['name'] = n_new
-                            s['position'] = p_new
-                            changed = True
-                    if changed:
-                        set_local_signers(local)
-                        self.update_preview()
-
-                    if (p_pos, p_nm) in candidates:
-                        candidates.remove((p_pos, p_nm))
-                    candidates.add((p_new, n_new))
-                    rebuild_pick_list(search_input.text)
-                    rebuild_list()
+                    dbg("edit_shared: вызываем ep.dismiss() перед сохранением")
                     ep.dismiss()
+
+                    def _process_save(dt):
+                        dbg("edit_shared._process_save: сохранение данных в базу...")
+                        shared = self.app.data.get('shared_signers', [])
+                        for sh in shared:
+                            if (sh.get('name') or '').strip() == p_nm and (sh.get('position') or '').strip() == p_pos:
+                                sh['name'] = n_new
+                                sh['position'] = p_new
+                        try:
+                            self.app.safe_save(self.app.data)
+                        except Exception as e:
+                            print("Save error:", e)
+
+                        local = get_local_signers()
+                        changed = False
+                        for s in local:
+                            if (s.get('name') or '').strip() == p_nm and (s.get('position') or '').strip() == p_pos:
+                                s['name'] = n_new
+                                s['position'] = p_new
+                                changed = True
+                        if changed:
+                            set_local_signers(local)
+
+                        if (p_pos, p_nm) in candidates:
+                            candidates.remove((p_pos, p_nm))
+                        candidates.add((p_new, n_new))
+                        
+                        if changed:
+                            self.update_preview()
+                        rebuild_pick_list(search_input.text)
+                        rebuild_list()
+                        dbg("edit_shared._process_save: сохранение завершено.")
+                    
+                    Clock.schedule_once(_process_save, 0)
 
                 save_b.bind(on_press=do_save)
                 cancel_b.bind(on_press=ep.dismiss)
                 pos_in.bind(on_text_validate=do_save)
                 name_in.bind(on_text_validate=do_save)
+                
+                dbg("edit_shared: привязка bind_enter_key")
                 bind_enter_key(ep, do_save)
-                ep.open()
+                
+                dbg("edit_shared: снимаем фокус с поиска и закрываем picker")
+                try:
+                    search_input.focus = False
+                except Exception:
+                    pass
+                
+                # === СТРОГО ПОСЛЕДОВАТЕЛЬНОЕ ОТКРЫТИЕ ===
+                def launch_ep(*args):
+                    picker.unbind(on_dismiss=launch_ep)
+                    dbg("edit_shared: Picker полностью закрылся, открываем ep")
+                    ep.open()
+
+                picker.bind(on_dismiss=launch_ep)
+                picker.dismiss()
+                dbg("edit_shared: picker.dismiss() вызван, ожидаем завершения анимации")
+
 
             def delete_shared(p_pos, p_nm):
                 def do_delete():
                     shared = self.app.data.get('shared_signers', [])
                     self.app.data['shared_signers'] = [s for s in shared if not ((s.get('name') or '').strip() == p_nm and (s.get('position') or '').strip() == p_pos)]
-                    save_data(self.app.data)
                     
                     local = get_local_signers()
                     local_clean = [s for s in local if not ((s.get('name') or '').strip() == p_nm and (s.get('position') or '').strip() == p_pos)]
                     set_local_signers(local_clean)
-                    self.update_preview()
                     
                     if (p_pos, p_nm) in candidates:
                         candidates.remove((p_pos, p_nm))
-                    rebuild_pick_list(search_input.text)
-                    rebuild_list()
+                        
+                    def _process_delete(dt):
+                        try:
+                            self.app.safe_save(self.app.data)
+                        except Exception as e:
+                            print("Save error:", e)
+                            
+                        self.update_preview()
+                        rebuild_pick_list(search_input.text)
+                        rebuild_list()
+                        # После удаления возвращаем picker
+                        self.active_picker_popup = picker
+                        self.active_picker_rebuild = rebuild_from_db
+                        Clock.schedule_once(lambda dt: picker.open(), 0.15)
+                    Clock.schedule_once(_process_delete, 0)
 
-                ask_password_and_run(
-                    DELETE_PASSWORD, do_delete,
-                    description=f"Удалить из базы «{p_pos} — {p_nm}»?\n(удалится у всех)"
-                )
+                dbg(f"delete_shared: нажато удаление {p_pos} - {p_nm}, закрываем picker")
+                try:
+                    search_input.focus = False
+                except Exception:
+                    pass
+                
+                # === СТРОГО ПОСЛЕДОВАТЕЛЬНОЕ ОТКРЫТИЕ ПАРОЛЯ ===
+                def launch_auth(*args):
+                    picker.unbind(on_dismiss=launch_auth)
+                    dbg("delete_shared: Picker полностью закрылся, открываем запрос пароля")
+                    ask_password_and_run(
+                        DELETE_PASSWORD, do_delete,
+                        description=f"Удалить из базы «{p_pos} — {p_nm}»?\n(удалится у всех)"
+                    )
+                
+                picker.bind(on_dismiss=launch_auth)
+                picker.dismiss()
+                dbg("delete_shared: picker.dismiss() вызван, ожидаем завершения анимации")
 
             def rebuild_pick_list(query=''):
                 pick_grid.clear_widgets()
@@ -707,6 +883,7 @@ class ReportTab(BoxLayout):
                         
                         def make_select(p=pos, n=nm):
                             def _sel(*a):
+                                dbg(f"rebuild_pick_list._sel: выбран {p} - {n}")
                                 new_pos.text = p
                                 new_name.text = n
                                 picker.dismiss()
@@ -732,11 +909,11 @@ class ReportTab(BoxLayout):
                         add_right_border(act_box, color=(0.4, 0.4, 0.4, 1))
                         
                         ed_btn = Button(text="Изменить", background_color=(0.35, 0.55, 0.85, 1), color=(1,1,1,1), font_name=FONT_NAME, font_size=dp(12))
-                        ed_btn.bind(on_press=lambda *a, p=pos, n=nm: edit_shared(p, n))
+                        ed_btn.bind(on_press=lambda *a, p=pos, n=nm: Clock.schedule_once(lambda dt: edit_shared(p, n), 0.1))
                         act_box.add_widget(ed_btn)
 
                         del_btn = Button(text="Удалить", background_color=(0.8, 0.2, 0.2, 1), color=(1,1,1,1), font_name=FONT_NAME, font_size=dp(12))
-                        del_btn.bind(on_press=lambda *a, p=pos, n=nm: delete_shared(p, n))
+                        del_btn.bind(on_press=lambda *a, p=pos, n=nm: Clock.schedule_once(lambda dt: delete_shared(p, n), 0.1))
                         act_box.add_widget(del_btn)
                         
                         row_layout.add_widget(act_box)
@@ -745,6 +922,29 @@ class ReportTab(BoxLayout):
                 if not found:
                     lbl = Label(text="Ничего не найдено", color=(0.6, 0.6, 0.6, 1), font_name=FONT_NAME, size_hint_y=None, height=dp(40))
                     pick_grid.add_widget(lbl)
+                    
+            def rebuild_from_db():
+                nonlocal candidates
+                candidates.clear()
+                for s in self.app.data.get('shared_signers', []):
+                    nm = (s.get('name') or '').strip()
+                    pos = (s.get('position') or '').strip()
+                    if pos and nm: candidates.add((pos, nm))
+                for s in get_local_signers():
+                    nm = (s.get('name') or '').strip()
+                    pos = (s.get('position') or '').strip()
+                    if pos and nm: candidates.add((pos, nm))
+                rebuild_pick_list(search_input.text)
+
+            self.active_picker_popup = picker
+            self.active_picker_rebuild = rebuild_from_db
+            
+            def on_picker_dismiss(*args):
+                dbg("open_signer_picker: окно Picker закрыто (on_picker_dismiss)")
+                self.active_picker_popup = None
+                self.active_picker_rebuild = None
+                
+            picker.bind(on_dismiss=on_picker_dismiss)
 
             search_input.bind(text=lambda inst, val: rebuild_pick_list(val))
             rebuild_pick_list()
@@ -752,13 +952,26 @@ class ReportTab(BoxLayout):
             pick_close = Button(text="Отмена", size_hint_y=None, height=dp(40), color=(1,1,1,1), font_name=FONT_NAME)
             pick_close.bind(on_press=picker.dismiss)
             pick_content.add_widget(pick_close)
+            
+            dbg("open_signer_picker: вызов picker.open()")
             picker.open()
-
+            
         pick_btn.bind(on_press=open_signer_picker)
         add_btn.bind(on_press=do_add)
         close_btn.bind(on_press=popup.dismiss)
         new_pos.bind(on_text_validate=do_add)
         new_name.bind(on_text_validate=do_add)
+
+        self.active_signers_popup = popup
+        self.active_signers_rebuild = rebuild_list
+        
+        def on_dismiss(*args):
+            dbg("show_signers_popup: главное окно подписантов закрыто")
+            self.active_signers_popup = None
+            self.active_signers_rebuild = None
+            self.update_preview()
+            
+        popup.bind(on_dismiss=on_dismiss)
 
         popup.open()
         rebuild_list()
@@ -839,7 +1052,26 @@ class ReportTab(BoxLayout):
                     grand[k] += res.get(k, 0)
         return grand, days_in_month, work_days, norm_hours, pre_count, key
 
+    def update_open_popups(self):
+        if getattr(self, 'active_signers_popup', None):
+            if getattr(self, 'active_signers_rebuild', None):
+                Clock.schedule_once(
+                    lambda dt: self.active_signers_rebuild(from_update=True), 0)
+
+        if getattr(self, 'active_picker_popup', None):
+            if getattr(self, 'active_picker_rebuild', None):
+                Clock.schedule_once(
+                    lambda dt: self.active_picker_rebuild(), 0)
+                
     def update_preview(self):
+        local = get_local_signers()
+        shared = self.app.data.get('shared_signers', [])
+        shared_keys = {(s.get('name', '').strip(), s.get('position', '').strip()) for s in shared}
+        
+        cleaned = [s for s in local if ((s.get('name') or '').strip(), (s.get('position') or '').strip()) in shared_keys]
+        if len(cleaned) != len(local):
+            set_local_signers(cleaned)
+
         y = int(self.year_spinner.text)
         m = MONTHS.index(self.month_spinner.text) + 1
         key = f"{y}-{m:02d}"
@@ -940,6 +1172,171 @@ class ReportTab(BoxLayout):
         lines += ["", sep, "  Нажмите «Сохранить в Excel», чтобы получить файл .xlsx"]
         self.preview.text = "\n".join(lines)
 
+    def show_admin_export_dialog(self, *args):
+        content = BoxLayout(orientation='vertical', spacing=10, padding=15)
+        content.add_widget(Widget(size_hint_y=1))
+
+        content.add_widget(Label(
+            text="Что именно нужно выгрузить?",
+            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(16), bold=True,
+            size_hint_y=None, height=dp(30)))
+
+        content.add_widget(Widget(size_hint_y=0.5))
+
+        btns_choice = BoxLayout(orientation='vertical', spacing=10, size_hint_y=None, height=dp(98))
+        
+        btn_cur = Button(text=f"Только текущий месяц ({self.month_spinner.text} {self.year_spinner.text})",
+                         background_color=(0.25, 0.55, 0.85, 1), color=(1,1,1,1), font_name=FONT_NAME)
+        btn_all = Button(text="ВСЕ месяцы, где есть данные",
+                         background_color=(0.4, 0.5, 0.7, 1), color=(1,1,1,1), font_name=FONT_NAME)
+
+        btns_choice.add_widget(btn_cur)
+        btns_choice.add_widget(btn_all)
+        content.add_widget(btns_choice)
+
+        content.add_widget(Widget(size_hint_y=1))
+
+        btn_cancel = Button(text="Отмена", color=(1,1,1,1), font_name=FONT_NAME, size_hint_y=None, height=dp(44))
+        content.add_widget(btn_cancel)
+
+        popup_choice = Popup(title="Параметры выгрузки", content=content,
+                             size_hint=(0.5, 0.5), title_color=LABEL_LIGHT,
+                             title_font=FONT_NAME, auto_dismiss=False)
+
+        def _proceed(export_all_months):
+            popup_choice.dismiss()
+            self._pick_folder_and_export(export_all_months)
+
+        btn_cur.bind(on_press=lambda *a: _proceed(False))
+        btn_all.bind(on_press=lambda *a: _proceed(True))
+        btn_cancel.bind(on_press=popup_choice.dismiss)
+        popup_choice.open()
+
+    def _pick_folder_and_export(self, export_all_months):
+        import os
+        target_dir = ""
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+            root.withdraw()
+            
+            if os.path.exists(config.ICON_PATH):
+                try:
+                    root.iconbitmap(default=config.ICON_PATH)
+                except Exception:
+                    pass
+
+            root.attributes('-topmost', True)
+            target_dir = filedialog.askdirectory(title="Выберите папку для сохранения Excel-файлов")
+            root.destroy()
+        except Exception as e:
+            print("Не удалось открыть системное окно выбора папки (tkinter):", e)
+            return
+
+        if not target_dir or not os.path.isdir(target_dir):
+            return
+
+        self._do_admin_export(target_dir, export_all_months)
+
+    def _do_admin_export(self, target_dir, export_all_months):
+        from kivy.uix.popup import Popup
+        from kivy.uix.boxlayout import BoxLayout
+        from kivy.uix.label import Label
+        from kivy.metrics import dp
+        from kivy.clock import Clock
+        from excel_export import export_full_excel
+        from ui_widgets import HoverButton
+        
+        prog_content = BoxLayout(orientation='vertical', spacing=10, padding=20)
+        prog_lbl = Label(text="Генерация файлов...\nПожалуйста, подождите.", 
+                         color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(16),
+                         halign='center', valign='middle')
+        prog_content.add_widget(prog_lbl)
+        
+        prog_popup = Popup(title="Выгрузка", content=prog_content, size_hint=(0.4, 0.25),
+                           title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+        prog_popup.open()
+        
+        def _do_work(dt):
+            count = 0
+            depts = self.app.data.get('departments', [])
+            
+            if export_all_months:
+                keys = sorted(self.app.data.get('timesheets', {}).keys())
+                for key in keys:
+                    try:
+                        y_str, m_str = key.split('-')
+                        m_idx = int(m_str)
+                        for d in depts:
+                            export_full_excel(self, force_dept=d, save_dir=target_dir, force_year=y_str, force_month=m_idx)
+                            count += 1
+                    except Exception as e:
+                        print(f"Ошибка при выгрузке {key}: {e}")
+            else:
+                y_str = self.year_spinner.text
+                m_idx = MONTHS.index(self.month_spinner.text) + 1
+                for d in depts:
+                    try:
+                        export_full_excel(self, force_dept=d, save_dir=target_dir, force_year=y_str, force_month=m_idx)
+                        count += 1
+                    except Exception as e:
+                        print(f"Ошибка при выгрузке отдела {d}: {e}")
+            
+            prog_lbl.text = f"Готово! Выгружено отчетов: {count}"
+            prog_popup.title = "Успешно"
+            
+            close_btn = HoverButton(text="ОК", size_hint_y=None, height=dp(44),
+                                    background_color=(0.3, 0.7, 0.3, 1), color=(1,1,1,1),
+                                    font_name=FONT_NAME, bold=True)
+            close_btn.bind(on_press=prog_popup.dismiss)
+            prog_content.add_widget(close_btn)
+            
+            prog_popup.size_hint = (0.4, 0.3)
+
+        Clock.schedule_once(_do_work, 0.5)
+
+    def _show_admin_export_kivy_dialog(self):
+        from kivy.uix.filechooser import FileChooserListView
+        from kivy.uix.popup import Popup
+        from kivy.uix.boxlayout import BoxLayout
+        from kivy.uix.label import Label
+        from kivy.uix.button import Button
+        from config import FONT_NAME, LABEL_LIGHT
+        from kivy.metrics import dp
+        import os
+        
+        content = BoxLayout(orientation='vertical', spacing=10, padding=15)
+        content.add_widget(Label(
+            text="Выберите папку, куда сохранить Excel-файлы ВСЕХ отделов:",
+            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(16), bold=True,
+            size_hint_y=None, height=dp(30)))
+            
+        filechooser = FileChooserListView(path=os.path.expanduser('~'), dirselect=True)
+        content.add_widget(filechooser)
+        
+        btns = BoxLayout(size_hint_y=None, height=dp(48), spacing=10)
+        ok_btn = Button(text="Выгрузить все", background_color=(0.3, 0.7, 0.3, 1), color=(1,1,1,1), font_name=FONT_NAME, font_size=dp(15), bold=True)
+        cancel_btn = Button(text="Отмена", color=(1,1,1,1), font_name=FONT_NAME, font_size=dp(15), bold=True)
+        btns.add_widget(ok_btn)
+        btns.add_widget(cancel_btn)
+        content.add_widget(btns)
+        
+        popup = Popup(title="Выбор папки", content=content, size_hint=(0.9, 0.9),
+                      title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+        
+        def do_export(*a):
+            target_dir = filechooser.path
+            if not target_dir or not os.path.isdir(target_dir):
+                return
+            popup.dismiss()
+            self._do_admin_export(target_dir, False)
+            
+        ok_btn.bind(on_press=do_export)
+        cancel_btn.bind(on_press=popup.dismiss)
+        popup.open()
+        
     def _show_openpyxl_error(self, err_msg):
         from kivy.uix.popup import Popup
         from kivy.uix.scrollview import ScrollView as _SV

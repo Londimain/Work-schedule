@@ -26,6 +26,67 @@ from data_storage import get_local_signers, get_visible_right_columns
 
 EXCEL_FONT = 'Times New Roman'
 
+# --- Константы для вертикальных заголовков (row_h2 в полной выгрузке) ---
+VERT_HEADER_MIN_H = 90
+VERT_CHAR_WIDTH_PT = 6.0
+VERT_PADDING_PT = 8.0
+
+def _excel_visual_width(txt):
+    """Оценивает визуальную ширину текста в единицах колонки Excel.
+    Учитывает, что разные кириллические буквы и символы имеют разную ширину.
+    """
+    if not txt:
+        return 0.0
+
+    WIDE_UPPER = set('МЖШЩЮФ')
+    w = 0.0
+    for ch in str(txt):
+        if ch.isdigit() or ch in ' .,+-':
+            w += 0.55      # цифры, точки, запятые, минусы
+        elif ch == '/':
+            w += 0.65      # слэши чуть шире
+        elif ch in WIDE_UPPER:
+            w += 1.35      # широкие заглавные: М, Ж, Ш, Щ, Ю, Ф
+        elif ch.isupper():
+            w += 1.15      # остальные заглавные
+        elif ch.isalpha():
+            w += 0.85      # строчные буквы
+        else:
+            w += 0.65
+    return w
+
+def _estimate_wrap_lines(text, max_chars=19):
+    """Точная эмуляция переноса строк в Excel (с учетом пробелов и дефисов)."""
+    if not text:
+        return 1
+    lines = 0
+    for paragraph in str(text).replace('\r', '').split('\n'):
+        if not paragraph:
+            lines += 1
+            continue
+        current_line_len = 0
+        for word in paragraph.split(' '):
+            if not word:
+                continue
+            parts = word.split('-')
+            for i, part in enumerate(parts):
+                if i < len(parts) - 1:
+                    part += '-'
+                if not part:
+                    continue
+                if current_line_len == 0:
+                    current_line_len = len(part)
+                    lines += 1
+                elif current_line_len + 1 + len(part) <= max_chars:
+                    current_line_len += 1 + len(part)
+                else:
+                    lines += 1
+                    current_line_len = len(part)
+                
+                while current_line_len > max_chars:
+                    current_line_len -= max_chars
+                    lines += 1
+    return max(1, lines)
 
 def format_name(name):
     if not name:
@@ -128,185 +189,198 @@ def _draw_legend(ws, row, total_cols, border, header_fill):
                     ws.cell(row=r, column=col).border = border
     return last_r + 1
 
-
-def export_full_excel(tab, *args):
+def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=None, force_month=None):
     if not HAS_OPENPYXL:
         tab._show_openpyxl_error(OPENPYXL_ERR)
         return
 
-    # --- Видимые колонки этого пользователя ---
+    # --- Видимые колонки ---
     visible_columns = get_visible_right_columns()
     if not visible_columns:
         visible_columns = list(RIGHT_COLUMNS)
     visible_keys = [c[1] for c in visible_columns]
     visible_set = set(visible_keys)
 
-    y = int(tab.year_spinner.text)
-    m = MONTHS.index(tab.month_spinner.text) + 1
+    # --- Период ---
+    if force_year is not None and force_month is not None:
+        y, m = int(force_year), int(force_month)
+    else:
+        y = int(tab.year_spinner.text)
+        m = MONTHS.index(tab.month_spinner.text) + 1
+
     key = f"{y}-{m:02d}"
     days_in_month = monthrange(y, m)[1]
     ts = tab.app.data['timesheets'].get(key, {})
-    employees = tab._employees_for_report()
+    
+    # --- Сбор сотрудников и отдела ---
+    if force_dept is not None:
+        dept = force_dept
+        emps = []
+        for emp in tab.app.data['employees']:
+            if emp.get('department', '') == dept:
+                if emp.get('id') in ts or emp.get('show_in_timesheet', False):
+                    emps.append(emp)
+        
+        month_dict = tab.app.data.get('extra_employees', {}).get(key, {})
+        if isinstance(month_dict, dict):
+            extra = month_dict.get(dept, [])
+            for e in extra:
+                e['is_extra'] = True
+            emps += extra
+        employees = emps
+    else:
+        dept = tab._get_dept()
+        employees = tab._employees_for_report()
+
+    if not dept and employees:
+        for e in employees:
+            d = e.get('department', '')
+            if d:
+                dept = d
+                break
+
     night_flags = tab.app.data.get('night_flags', {})
     overtime_flags = tab.app.data.get('overtime_flags', {})
     no_weekends_flags = tab.app.data.get('no_weekends_flags', {})
     org = tab.app.data.get('organization', DEFAULT_ORG)
-    dept = tab._get_dept()
     signer_pos, signer_name = tab._get_signer(dept)
     director_name = tab.app.data.get('director_name', DEFAULT_DIRECTOR)
     day_types = [classify_day(y, m, d) for d in range(1, days_in_month + 1)]
     norm_hours, work_days, pre_count = calc_norm_hours(y, m)
     overrides_all = tab.app.data.get('result_overrides', {}).get(key, {})
 
+    # --- Стили ---
     thin = Side(border_style="thin", color="333333")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    center = Alignment(horizontal='center', vertical='center')
-    left = Alignment(horizontal='left', vertical='center')
-    vert = Alignment(horizontal='center', vertical='center',
-                     text_rotation=90, wrap_text=False)
+    center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    center_nowrap = Alignment(horizontal='center', vertical='center', wrap_text=False)
+    left_wrap = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    left_nowrap = Alignment(horizontal='left', vertical='center', wrap_text=False)
+    vert = Alignment(horizontal='center', vertical='bottom', text_rotation=90, wrap_text=False)
+    
     header_fill = PatternFill("solid", fgColor="E8E8E8")
     weekend_fill = PatternFill("solid", fgColor="FFDEDE")
     holiday_fill = PatternFill("solid", fgColor="FFF3CC")
     total_fill = PatternFill("solid", fgColor="D0D0D0")
 
-    f_title = Font(name=EXCEL_FONT, size=25, bold=True, italic=True)
-    f_date_bold = Font(name=EXCEL_FONT, size=25, bold=True)
-    f_date_norm = Font(name=EXCEL_FONT, size=23)
-    f_italic = Font(name=EXCEL_FONT, size=25, italic=True)
-    f_italic_ul = Font(name=EXCEL_FONT, size=25, italic=True, underline='single')
-    f_head = Font(name=EXCEL_FONT, size=14, bold=True)
-    f_vert = Font(name=EXCEL_FONT, size=14)
-    f_cell = Font(name=EXCEL_FONT, size=14)
-    f_sig = Font(name=EXCEL_FONT, size=25)
-    f_sig_bold = Font(name=EXCEL_FONT, size=25, bold=True)
+    f_title = Font(name=EXCEL_FONT, size=14, bold=True, italic=True)
+    f_date_bold = Font(name=EXCEL_FONT, size=12, bold=True)
+    f_italic = Font(name=EXCEL_FONT, size=11, italic=True)
+    f_head = Font(name=EXCEL_FONT, size=11, bold=True)
+    f_vert = Font(name=EXCEL_FONT, size=11)
+    f_cell = Font(name=EXCEL_FONT, size=11)
+    f_sig = Font(name=EXCEL_FONT, size=13)
+    f_sig_bold = Font(name=EXCEL_FONT, size=13, bold=True)
 
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f"{MONTHS[m-1]} {y}"
 
-    total_cols = 3 + days_in_month + len(visible_columns)
-    right_anchor = total_cols
-    title_end = 13
-    date_start = 14
-    date_end = 21
-    days_start = 23
+    # --- РАЗМЕТКА ---
+    start_days = 4
+    end_days = start_days + days_in_month - 1
+    total_cols = end_days + len(visible_columns)
+    
+    title_end = min(end_days, 11)  # <--- УМЕНЬШЕНО ДО 11 (на 4 меньше)
+    date_start = title_end + 1
+    
+    approve_col = max(end_days + 2, total_cols - 12) - 9
+    director_col = approve_col - 1
+    name_col = min(director_col + 5, total_cols)
 
-    # Позиция блока "Утверждаю" — безопасная для любого кол-ва видимых колонок
-    approve_col = right_anchor - 17
-    if approve_col < days_start + 1:
-        approve_col = days_start + 1
-    if approve_col + 14 > right_anchor:
-        approve_col = max(days_start + 1, right_anchor - 14)
-    days_end = max(days_start, approve_col - 1)
-
-    # ---------- Строка 1: заголовки ----------
+    # ---------- Строка 1 ----------
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=title_end)
     c = ws.cell(row=1, column=1, value="табель учета использования рабочего времени")
     c.font = f_title
-    c.alignment = Alignment(horizontal='left', vertical='center')
+    c.alignment = left_nowrap  # <--- ВЫРАВНИВАНИЕ ПО ЛЕВОМУ КРАЮ
 
-    ws.merge_cells(start_row=1, start_column=date_start,
-                   end_row=1, end_column=date_end)
-    c = ws.cell(row=1, column=date_start, value=f"{y}, {MONTHS[m-1].lower()}")
-    c.font = f_date_bold
-    c.alignment = Alignment(horizontal='center', vertical='center')
+    if end_days >= date_start:
+        date_end = min(end_days, approve_col - 1)
+        if date_start <= date_end:
+            ws.merge_cells(start_row=1, start_column=date_start, end_row=1, end_column=date_end)
+            c = ws.cell(row=1, column=date_start, value=f"{y}, {MONTHS[m-1].lower()} ({days_in_month} календарных дней)")
+            c.font = f_date_bold
+            c.alignment = center_nowrap  # <--- ИСПРАВЛЕНО (без переноса)
 
-    ws.merge_cells(start_row=1, start_column=days_start,
-                   end_row=1, end_column=days_end)
-    c = ws.cell(row=1, column=days_start, value=f"({days_in_month} календарных дней)")
-    c.font = f_date_norm
-    c.alignment = Alignment(horizontal='center', vertical='center')
+    if approve_col <= total_cols:
+        ws.merge_cells(start_row=1, start_column=approve_col, end_row=1, end_column=total_cols)
+        c = ws.cell(row=1, column=approve_col, value="Утверждаю:")
+        c.font = f_sig
+        c.alignment = Alignment(horizontal='left', vertical='center', indent=1)
 
+    # ---------- Строка 2 ----------
     ws.merge_cells('A2:C2')
     c = ws.cell(row=2, column=1, value="Предприятие")
     c.font = f_italic
-    c.alignment = Alignment(horizontal='left', vertical='center')
-    ws.merge_cells(start_row=2, start_column=4, end_row=2, end_column=title_end + 3)
-    c = ws.cell(row=2, column=4, value=org)
-    c.font = f_italic_ul
-    c.alignment = Alignment(horizontal='left', vertical='center', indent=2)
+    c.alignment = center
+    
+    org_end = min(end_days, director_col - 1)
+    if org_end >= 4:
+        ws.merge_cells(start_row=2, start_column=4, end_row=2, end_column=org_end)
+        c = ws.cell(row=2, column=4, value=org)
+        c.font = f_italic
+        c.alignment = Alignment(horizontal='left', vertical='center', indent=1)
 
+    if approve_col <= total_cols:
+        ws.merge_cells(start_row=2, start_column=director_col, end_row=2, end_column=max(director_col, name_col - 1))
+        c = ws.cell(row=2, column=director_col, value="Директор")
+        c.font = f_sig
+        c.alignment = Alignment(horizontal='right', vertical='center')
+
+        ws.merge_cells(start_row=2, start_column=name_col, end_row=2, end_column=total_cols)
+        c = ws.cell(row=2, column=name_col, value=director_name)
+        c.font = f_sig
+        c.alignment = Alignment(horizontal='right', vertical='center', indent=1)
+
+    # ---------- Строка 3 ----------
     ws.merge_cells('A3:C3')
     c = ws.cell(row=3, column=1, value="Отдел, цех, участок")
     c.font = f_italic
-    c.alignment = Alignment(horizontal='left', vertical='center')
-    ws.merge_cells(start_row=3, start_column=4, end_row=3, end_column=title_end + 3)
+    c.alignment = center
+    
+    ws.merge_cells(start_row=3, start_column=4, end_row=3, end_column=end_days)
     c = ws.cell(row=3, column=4, value=dept)
-    c.font = f_italic_ul
-    c.alignment = Alignment(horizontal='left', vertical='center', indent=2)
+    c.font = f_italic
+    c.alignment = Alignment(horizontal='left', vertical='center', indent=1)
 
-    # ---------- Утверждаю / Директор / Фамилия ----------
-    ws.merge_cells(start_row=1, start_column=approve_col,
-                   end_row=1, end_column=approve_col + 4)
-    c = ws.cell(row=1, column=approve_col, value="Утверждаю:")
-    c.font = f_sig
-    c.alignment = Alignment(horizontal='center', vertical='center')
-
-    director_col = approve_col
-    ws.merge_cells(start_row=2, start_column=director_col,
-                   end_row=2, end_column=director_col + 4)
-    c = ws.cell(row=2, column=director_col, value="Директор")
-    c.font = f_sig
-    c.alignment = Alignment(horizontal='center', vertical='center')
-
-    name_col = max(director_col + 5, right_anchor - 9)
-    if name_col > right_anchor:
-        name_col = right_anchor
-    if name_col <= right_anchor:
-        ws.merge_cells(start_row=2, start_column=name_col,
-                       end_row=2, end_column=right_anchor)
-        c = ws.cell(row=2, column=name_col, value=director_name)
-        c.font = f_sig
-        c.alignment = Alignment(horizontal='center', vertical='center')
-
-    # ---------- Шапка таблицы (row_h1, row_h2) ----------
+    # ---------- Шапка таблицы ----------
     row_h1, row_h2 = 5, 6
     for col, label in [(1, "№"), (2, "Фамилия И.О."), (3, "Должность")]:
         c = ws.cell(row=row_h1, column=col, value=label)
         c.font = f_head
         c.alignment = center
         c.fill = header_fill
-        ws.merge_cells(start_row=row_h1, start_column=col,
-                       end_row=row_h2, end_column=col)
+        ws.merge_cells(start_row=row_h1, start_column=col, end_row=row_h2, end_column=col)
 
-    start_days = 4
-    end_days = start_days + days_in_month - 1
-    ws.merge_cells(start_row=row_h1, start_column=start_days,
-                   end_row=row_h1, end_column=end_days)
+    ws.merge_cells(start_row=row_h1, start_column=start_days, end_row=row_h1, end_column=end_days)
     c = ws.cell(row=row_h1, column=start_days, value="Числа месяца")
     c.font = f_head
     c.alignment = center
     c.fill = header_fill
 
-    # Группы "Дни явок / Дни неявок / Отработано часов" — только по видимым
+    # Группы
     start_r = end_days + 1
     for gname, gkeys in RIGHT_COLUMN_GROUPS:
         gvis_count = sum(1 for k in gkeys if k in visible_set)
         if gvis_count == 0:
             continue
-        ws.merge_cells(start_row=row_h1, start_column=start_r,
-                       end_row=row_h1, end_column=start_r + gvis_count - 1)
+        ws.merge_cells(start_row=row_h1, start_column=start_r, end_row=row_h1, end_column=start_r + gvis_count - 1)
         c = ws.cell(row=row_h1, column=start_r, value=gname)
         c.font = f_head
         c.alignment = center
         c.fill = header_fill
         start_r += gvis_count
 
-    # Заголовки дней месяца (row_h2)
+    # Дни
     for i, dt in enumerate(day_types):
         col = start_days + i
         wd = WEEKDAYS_SHORT[date(y, m, i + 1).weekday()]
         c = ws.cell(row=row_h2, column=col, value=f"{i + 1}\n{wd}")
         c.font = f_cell
-        c.alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
-        if dt == 'weekend':
-            c.fill = weekend_fill
-        elif dt == 'holiday':
-            c.fill = holiday_fill
-        else:
-            c.fill = header_fill
+        c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        c.fill = weekend_fill if dt == 'weekend' else holiday_fill if dt == 'holiday' else header_fill
 
-    # Заголовки правых колонок — только видимые
+    # Правые заголовки
     start_r = end_days + 1
     for label, key_, _w in visible_columns:
         c = ws.cell(row=row_h2, column=start_r, value=label)
@@ -321,87 +395,75 @@ def export_full_excel(tab, *args):
 
     # ---------- Данные ----------
     row = row_h2 + 1
-    # grand — по ВСЕМ колонкам (нужно для среднесписочной)
     grand = {k: 0 for _, k, _ in RIGHT_COLUMNS}
-    grand['часы'] = 0.0
-    grand['сверхурочные'] = 0.0
-    grand['ночные'] = 0.0
-    grand['праздничные'] = 0.0
+    grand.update({'часы': 0.0, 'сверхурочные': 0.0, 'ночные': 0.0, 'праздничные': 0.0})
     max_col_len = {k: 0 for k in visible_keys}
-    max_day_len = {i: 1 for i in range(days_in_month)}
+    max_day_w = {i: 1.0 for i in range(days_in_month)}
+    max_name_len, max_pos_len = 0, 0
 
     for idx, emp in enumerate(employees):
         emp_id = emp['id']
         day_data = ts.get(emp_id, {})
         values = [day_data.get(str(d), '') for d in range(1, days_in_month + 1)]
+        
+        name_text = format_name(emp.get('name', ''))
+        pos_text = emp.get('position', '').replace('\n', ' ').strip()
+        max_name_len = max(max_name_len, len(name_text))
+        max_pos_len = max(max_pos_len, len(pos_text))
+
         pos_name = emp.get('position', '')
-        night_on = bool(night_flags.get(pos_name, False))
-        overtime_on = bool(overtime_flags.get(pos_name, False))
-        no_weekends_on = bool(no_weekends_flags.get(pos_name, False))
-        res = analyze_row(values, day_types, night_on, no_weekends_on)
-        if overtime_on:
+        res = analyze_row(values, day_types, bool(night_flags.get(pos_name, False)), bool(no_weekends_flags.get(pos_name, False)))
+        if bool(overtime_flags.get(pos_name, False)):
             apply_overtime(res, norm_hours)
         else:
             res['сверхурочные'] = 0.0
+            
         emp_over = overrides_all.get(emp_id, {})
         for k in grand:
             if k in emp_over:
-                try:
-                    grand[k] += float(str(emp_over[k]).replace(',', '.'))
-                except (ValueError, TypeError):
-                    pass
+                try: grand[k] += float(str(emp_over[k]).replace(',', '.'))
+                except (ValueError, TypeError): pass
             else:
                 grand[k] += res.get(k, 0)
 
         ws.cell(row=row, column=1, value=idx + 1).font = f_cell
         ws.cell(row=row, column=1).alignment = center
 
-        c_name = ws.cell(row=row, column=2,
-                         value=format_name(emp.get('name', '')))
+        c_name = ws.cell(row=row, column=2, value=name_text)
         c_name.font = f_cell
-        c_name.alignment = left
+        c_name.alignment = left_nowrap  # <--- ФАМИЛИЯ БЕЗ ПЕРЕНОСА
 
-        pos_text = emp.get('position', '').replace('\n', ' ').strip()
         c_pos = ws.cell(row=row, column=3, value=pos_text)
         c_pos.font = f_cell
-        c_pos.alignment = Alignment(horizontal='left', vertical='center',
-                                    wrap_text=True)
+        c_pos.alignment = left_wrap     # <--- ДОЛЖНОСТЬ С ПЕРЕНОСОМ
 
         for i, v in enumerate(values):
             col = start_days + i
-            if str(v).strip() == '0':
-                v = None
+            if str(v).strip() == '0': v = None
             c = ws.cell(row=row, column=col, value=v)
             c.font = f_cell
-            c.alignment = Alignment(horizontal='center', vertical='center')
+            c.alignment = center
             if v is not None:
-                max_day_len[i] = max(max_day_len[i], len(str(v)))
-            if day_types[i] == 'weekend':
-                c.fill = weekend_fill
-            elif day_types[i] == 'holiday':
-                c.fill = holiday_fill
+                w = _excel_visual_width(v)
+                if w > max_day_w[i]:
+                    max_day_w[i] = w
+            if day_types[i] == 'weekend': c.fill = weekend_fill
+            elif day_types[i] == 'holiday': c.fill = holiday_fill
 
         start_r = end_days + 1
         for _, key_, _w in visible_columns:
-            if key_ in emp_over:
-                val = emp_over[key_]
-            else:
-                v = res.get(key_, 0)
-                val = (fmt_hours(v)
-                       if key_ in ('часы', 'сверхурочные', 'ночные',
-                                   'праздничные', 'выходные_часы')
-                       else v)
-            if str(val).strip() in ('0', '0.0', '0.00'):
-                val = None
+            val = emp_over.get(key_, res.get(key_, 0))
+            if key_ in ('часы', 'сверхурочные', 'ночные', 'праздничные', 'выходные_часы'):
+                val = fmt_hours(val)
+            if str(val).strip() in ('0', '0.0', '0.00'): val = None
             c = ws.cell(row=row, column=start_r, value=val)
-            if val is not None:
-                max_col_len[key_] = max(max_col_len[key_], len(str(val)))
+            if val is not None: max_col_len[key_] = max(max_col_len[key_], len(str(val)))
             c.font = f_cell
             c.alignment = center
             start_r += 1
 
-        num_lines = max(1, math.ceil(len(pos_text) / 20))
-        ws.row_dimensions[row].height = max(45, num_lines * 20)
+        est_lines_pos = _estimate_wrap_lines(pos_text, max_chars=19)
+        ws.row_dimensions[row].height = max(16, est_lines_pos * 17)
         for col in range(1, total_cols + 1):
             ws.cell(row=row, column=col).border = border
         row += 1
@@ -415,8 +477,7 @@ def export_full_excel(tab, *args):
         ws.cell(row=row, column=col).border = border
         ws.cell(row=row, column=col).fill = total_fill
 
-    ws.merge_cells(start_row=row, start_column=start_days,
-                   end_row=row, end_column=end_days)
+    ws.merge_cells(start_row=row, start_column=start_days, end_row=row, end_column=end_days)
     for col in range(start_days, end_days + 1):
         ws.cell(row=row, column=col).border = border
         ws.cell(row=row, column=col).fill = total_fill
@@ -424,124 +485,155 @@ def export_full_excel(tab, *args):
     start_r = end_days + 1
     for _, key_, _w in visible_columns:
         v = grand.get(key_, 0)
-        val = (fmt_hours(v)
-               if key_ in ('часы', 'сверхурочные', 'ночные',
-                           'праздничные', 'выходные_часы')
-               else v)
-        if str(val).strip() in ('0', '0.0', '0.00'):
-            val = None
+        val = fmt_hours(v) if key_ in ('часы', 'сверхурочные', 'ночные', 'праздничные', 'выходные_часы') else v
+        if str(val).strip() in ('0', '0.0', '0.00'): val = None
         c = ws.cell(row=row, column=start_r, value=val)
-        if val is not None:
-            max_col_len[key_] = max(max_col_len[key_], len(str(val)))
+        if val is not None: max_col_len[key_] = max(max_col_len[key_], len(str(val)))
         c.font = f_head
         c.alignment = center
         c.border = border
         c.fill = total_fill
         start_r += 1
-    ws.row_dimensions[row].height = 28
+    ws.row_dimensions[row].height = 20
 
     # ---------- Численность ----------
     spis_count = sum(1 for emp in employees if emp.get('is_contract', True))
-    total_days = sum(grand[k] for k in grand
-                     if k not in ('часы', 'сверхурочные', 'ночные', 'праздничные'))
+    total_days = sum(grand[k] for k in grand if k not in ('часы', 'сверхурочные', 'ночные', 'праздничные'))
     avg_count = total_days / days_in_month if days_in_month > 0 else 0
 
     row += 2
-    ws.row_dimensions[row].height = 38
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+    ws.row_dimensions[row].height = 24
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
     c = ws.cell(row=row, column=1, value="Норма рабочего времени:")
     c.font = f_sig
     c.alignment = Alignment(horizontal='left', vertical='center')
-    ws.merge_cells(start_row=row, start_column=8, end_row=row, end_column=10)
-    c2 = ws.cell(row=row, column=8, value=f"{fmt_hours(norm_hours)} ч")
+    c2 = ws.cell(row=row, column=4, value=f"{fmt_hours(norm_hours)} ч")
     c2.font = f_sig_bold
     c2.alignment = Alignment(horizontal='left', vertical='center')
 
     row += 1
-    ws.row_dimensions[row].height = 38
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+    ws.row_dimensions[row].height = 24
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
     c = ws.cell(row=row, column=1, value="Списочная численность:")
     c.font = f_sig
     c.alignment = Alignment(horizontal='left', vertical='center')
-    ws.merge_cells(start_row=row, start_column=8, end_row=row, end_column=10)
-    c2 = ws.cell(row=row, column=8, value=spis_count)
+    c2 = ws.cell(row=row, column=4, value=spis_count)
     c2.font = f_sig_bold
     c2.alignment = Alignment(horizontal='left', vertical='center')
 
     row += 1
-    ws.row_dimensions[row].height = 38
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+    ws.row_dimensions[row].height = 24
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
     c = ws.cell(row=row, column=1, value="Среднесписочная численность:")
     c.font = f_sig
     c.alignment = Alignment(horizontal='left', vertical='center')
     val_avg = round(avg_count, 2)
-    if val_avg == int(val_avg):
-        val_avg = int(val_avg)
-    ws.merge_cells(start_row=row, start_column=8, end_row=row, end_column=10)
-    c2 = ws.cell(row=row, column=8, value=val_avg)
+    if val_avg == int(val_avg): val_avg = int(val_avg)
+    c2 = ws.cell(row=row, column=4, value=val_avg)
     c2.font = f_sig_bold
     c2.alignment = Alignment(horizontal='left', vertical='center')
 
-    # ---------- Ширины столбцов ----------
-    ws.column_dimensions['A'].width = 5
-    max_name_len = max(
-        (len(format_name(emp.get('name', '') or '')) for emp in employees),
-        default=15)
-    ws.column_dimensions['B'].width = max(20, max_name_len * 1.2 + 5)
-    max_pos_len = max(
-        (len(emp.get('position', '') or '') for emp in employees),
-        default=15)
-    ws.column_dimensions['C'].width = max(16, min(max_pos_len * 1.2 + 5, 35))
-    
-    # Авто-ширина для колонок дней месяца
+    # ---------- ШИРИНЫ СТОЛБЦОВ ----------
+    EXCEL_OFFSET = 5.0 / 7.0
+
+    # № — минимум 2.57, расширяем если номеров много
+    max_num = max(1, len(employees))
+    num_digits = len(str(max_num))
+    num_visual = max(2.57, num_digits * 0.8 + 0.4)
+    ws.column_dimensions['A'].width = num_visual + EXCEL_OFFSET
+
+    # Фамилия — жесткий минимум 16.0 (в единицах Excel) + запас 1.0 к самой длинной фамилии
+    max_name_visual = max((_excel_visual_width(format_name(emp.get('name', ''))) for emp in employees), default=0.0)
+    name_visual = max(16.0, max_name_visual + 1.0)
+    ws.column_dimensions['B'].width = name_visual + EXCEL_OFFSET
+
+    # Должность — реальная визуальная ширина + минимальный отступ
+    max_pos_visual = max((_excel_visual_width(emp.get('position', '').replace('\n', ' ').strip()) for emp in employees), default=0.0)
+    pos_visual = max(12.5, min(21.0, max_pos_visual + 0.5))
+    ws.column_dimensions['C'].width = pos_visual + EXCEL_OFFSET
+
+    # Дни — минимум 2.57, + 0.5 к реальной ширине
     for i in range(days_in_month):
-        w = max(4.5, max_day_len[i] * 1.2 + 2.0)
-        ws.column_dimensions[get_column_letter(start_days + i)].width = w
+        day_visual = max(2.57, max_day_w[i] + 0.5)
+        ws.column_dimensions[get_column_letter(start_days + i)].width = day_visual + EXCEL_OFFSET
+
+    # Правые колонки (Итоги) — используем 0.55 на символ (цифры узкие) + 0.5 на отступы
+    col_widths = {}
+    for _, key_, _w in visible_columns:
+        content_visual = max_col_len[key_] * 0.55 + 0.5
+        visual_min = max(2.57, content_visual)
+        col_widths[key_] = visual_min + EXCEL_OFFSET
+
+    # Групповые минимумы (в визуальных единицах!)
+    GROUP_MINS_VISUAL = {
+        "Дни явок": 5.0,
+        "Дни неявок": 8.0,
+        "Отработано часов": 12.43,
+    }
+    for gname, gkeys in RIGHT_COLUMN_GROUPS:
+        gvis = [k for k in gkeys if k in visible_set]
+        if not gvis:
+            continue
+        target_visual = GROUP_MINS_VISUAL.get(gname, 0)
+        if target_visual <= 0:
+            continue
+        target_openpyxl = target_visual + EXCEL_OFFSET
+        current_sum = sum(col_widths[k] for k in gvis)
+        if current_sum < target_openpyxl:
+            diff = target_openpyxl - current_sum
+            per_col = diff / len(gvis)
+            for k in gvis:
+                col_widths[k] += per_col
 
     for i, (_, key_, _w) in enumerate(visible_columns):
         col_letter = get_column_letter(end_days + 1 + i)
-        calc_width = max(6.5, max_col_len[key_] * 1.2 + 2.0)
-        if key_ in ('явки', 'целосмен_простой'):
-            calc_width = max(calc_width, 7.5)
-        ws.column_dimensions[col_letter].width = calc_width
+        ws.column_dimensions[col_letter].width = col_widths[key_]
 
-    ws.row_dimensions[1].height = 45
-    ws.row_dimensions[2].height = 35
-    ws.row_dimensions[3].height = 35
-    ws.row_dimensions[4].height = 24
-    ws.row_dimensions[row_h1].height = 30
-    ws.row_dimensions[row_h2].height = 150
+    ws.row_dimensions[row_h1].height = 35
+
+    max_vert_len = max((len(str(label)) for label, _k, _w in visible_columns), default=0)
+    required_vert_h = max_vert_len * VERT_CHAR_WIDTH_PT + VERT_PADDING_PT
+    ws.row_dimensions[row_h2].height = max(VERT_HEADER_MIN_H, required_vert_h)
 
     # ---------- Подписи ----------
-    row += 1
+    row += 4
     LEFT_COL = 3
     sig_row = row + 2
 
     c = ws.cell(row=sig_row, column=LEFT_COL, value=signer_pos)
     c.font = f_sig
     c.alignment = Alignment(horizontal='left', vertical='center')
-    sig_name_col = min(LEFT_COL + 29, total_cols)
+    sig_name_col = min(LEFT_COL + 25, total_cols)
     c = ws.cell(row=sig_row, column=sig_name_col, value=signer_name)
     c.font = f_sig
     c.alignment = Alignment(horizontal='left', vertical='center')
 
-    additional_signers = get_local_signers()
-    active_add = [s for s in additional_signers if s.get('active', True)]
-    for s in active_add:
-        sig_row += 7
-        c = ws.cell(row=sig_row, column=LEFT_COL, value=s.get('position', ''))
-        c.font = f_sig
-        c.alignment = Alignment(horizontal='left', vertical='center')
-        c = ws.cell(row=sig_row, column=sig_name_col, value=s.get('name', ''))
-        c.font = f_sig
-        c.alignment = Alignment(horizontal='left', vertical='center')
+    if force_dept is not None:
+        additional_signers = tab.app.data.get('shared_signers', [])
+    else:
+        additional_signers = get_local_signers()
+
+    for s in additional_signers:
+        if s.get('active', True): 
+            sig_row += 4
+            c = ws.cell(row=sig_row, column=LEFT_COL, value=s.get('position', ''))
+            c.font = f_sig
+            c.alignment = Alignment(horizontal='left', vertical='center')
+            c = ws.cell(row=sig_row, column=sig_name_col, value=s.get('name', ''))
+            c.font = f_sig
+            c.alignment = Alignment(horizontal='left', vertical='center')
 
     last_print_row = sig_row + 2
 
     if tab.legend_cb.active:
-        legend_start_row = sig_row + 4
-        last_print_row = _draw_legend(ws, legend_start_row, total_cols,
-                                      border, header_fill)
+        legend_start_row = sig_row + 3
+        last_print_row = _draw_legend(ws, legend_start_row, total_cols, border, header_fill)
+
+    # --- Настройки страницы ---
+    ws.page_margins.left = 0.2
+    ws.page_margins.right = 0.2
+    ws.page_margins.top = 0.2
+    ws.page_margins.bottom = 0.2
 
     ws.page_setup.orientation = 'landscape'
     ws.page_setup.fitToWidth = 1
@@ -552,7 +644,7 @@ def export_full_excel(tab, *args):
     except Exception:
         pass
 
-    _save_and_open(ws, wb, y, dept, key, "_full")
+    _save_and_open(ws, wb, y, dept, key, "_full", custom_dir=save_dir)
 
 
 def export_short_excel(tab, *args):
@@ -570,119 +662,133 @@ def export_short_excel(tab, *args):
     no_weekends_flags = tab.app.data.get('no_weekends_flags', {})
     org = tab.app.data.get('organization', DEFAULT_ORG)
     dept = tab._get_dept()
-    overrides_all = tab.app.data.get('result_overrides', {}).get(key, {})
+    
+    if not dept and employees:
+        for e in employees:
+            d = e.get('department', '')
+            if d:
+                dept = d
+                break
 
+    overrides_all = tab.app.data.get('result_overrides', {}).get(key, {})
     day_types = [classify_day(y, m, d) for d in range(1, days_in_month + 1)]
     norm_hours, work_days, pre_count = calc_norm_hours(y, m)
 
     thin = Side(border_style="thin", color="333333")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    center = Alignment(horizontal='center', vertical='center')
-    left = Alignment(horizontal='left', vertical='center')
+    center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    center_nowrap = Alignment(horizontal='center', vertical='center', wrap_text=False)
+    left_wrap = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    left_nowrap = Alignment(horizontal='left', vertical='center', wrap_text=False)
+    
     header_fill = PatternFill("solid", fgColor="E8E8E8")
     weekend_fill = PatternFill("solid", fgColor="FFDEDE")
     holiday_fill = PatternFill("solid", fgColor="FFF3CC")
     total_fill = PatternFill("solid", fgColor="D0D0D0")
-    f_title = Font(name=EXCEL_FONT, size=23, bold=True, italic=True)
-    f_date_bold = Font(name=EXCEL_FONT, size=23, bold=True)
-    f_date_norm = Font(name=EXCEL_FONT, size=23)
-    f_italic = Font(name=EXCEL_FONT, size=23, italic=True)
-    f_italic_ul = Font(name=EXCEL_FONT, size=23, italic=True, underline='single')
-    f_head = Font(name=EXCEL_FONT, size=12, bold=True)
-    f_cell = Font(name=EXCEL_FONT, size=12)
-    f_norm_lbl = Font(name=EXCEL_FONT, size=23)
-    f_norm_val = Font(name=EXCEL_FONT, size=23, bold=True)
+    
+    f_title = Font(name=EXCEL_FONT, size=14, bold=True, italic=True)
+    f_date_bold = Font(name=EXCEL_FONT, size=12, bold=True)
+    f_italic = Font(name=EXCEL_FONT, size=11, italic=True)
+    f_head = Font(name=EXCEL_FONT, size=11, bold=True)
+    f_cell = Font(name=EXCEL_FONT, size=11)
+    f_sig = Font(name=EXCEL_FONT, size=13)
+    f_sig_bold = Font(name=EXCEL_FONT, size=13, bold=True)
 
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f"{MONTHS[m-1]} {y}"
-    total_cols = 2 + days_in_month + 2
-    title_end = 16
-    date_start = 18
-    date_end = 24
-    days_start = 26
-    days_end = total_cols
+    
+    start_days = 4
+    end_days = start_days + days_in_month - 1
+    total_cols = end_days + 2
+    
+    col_hours = end_days + 1
+    col_off = end_days + 2
 
+    title_end = min(end_days, 11)  # <--- УМЕНЬШЕНО ДО 11
+    date_start = title_end + 1
+
+    # Строка 1
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=title_end)
     c = ws.cell(row=1, column=1, value="табель учета использования рабочего времени")
     c.font = f_title
-    c.alignment = Alignment(horizontal='left', vertical='center')
-    ws.merge_cells(start_row=1, start_column=date_start,
-                   end_row=1, end_column=date_end)
-    c = ws.cell(row=1, column=date_start, value=f"{y}, {MONTHS[m-1].lower()}")
-    c.font = f_date_bold
-    c.alignment = Alignment(horizontal='center', vertical='center')
-    ws.merge_cells(start_row=1, start_column=days_start,
-                   end_row=1, end_column=days_end)
-    c = ws.cell(row=1, column=days_start, value=f"({days_in_month} календарных дней)")
-    c.font = f_date_norm
-    c.alignment = Alignment(horizontal='center', vertical='center')
+    c.alignment = left_nowrap  # <--- ВЫРАВНИВАНИЕ ПО ЛЕВОМУ КРАЮ
+    
+    if end_days >= date_start:
+        ws.merge_cells(start_row=1, start_column=date_start, end_row=1, end_column=end_days)
+        c = ws.cell(row=1, column=date_start, value=f"{y}, {MONTHS[m-1].lower()} ({days_in_month} календарных дней)")
+        c.font = f_date_bold
+        c.alignment = center_nowrap  # <--- ИСПРАВЛЕНО (без переноса)
 
-    ws.merge_cells('A2:E2')
+    # Строка 2
+    ws.merge_cells('A2:C2')
     c = ws.cell(row=2, column=1, value="Предприятие")
     c.font = f_italic
-    c.alignment = Alignment(horizontal='left', vertical='center')
-    ws.merge_cells(start_row=2, start_column=6, end_row=2, end_column=title_end + 3)
-    c = ws.cell(row=2, column=6, value=org)
-    c.font = f_italic_ul
-    c.alignment = Alignment(horizontal='left', vertical='center', indent=2)
-    ws.merge_cells('A3:E3')
+    c.alignment = center
+    
+    ws.merge_cells(start_row=2, start_column=start_days, end_row=2, end_column=end_days)
+    c = ws.cell(row=2, column=start_days, value=org)
+    c.font = f_italic
+    c.alignment = Alignment(horizontal='left', vertical='center', indent=1)
+
+    # Строка 3
+    ws.merge_cells('A3:C3')
     c = ws.cell(row=3, column=1, value="Отдел, цех, участок")
     c.font = f_italic
-    c.alignment = Alignment(horizontal='left', vertical='center')
-    ws.merge_cells(start_row=3, start_column=6, end_row=3, end_column=title_end + 3)
-    c = ws.cell(row=3, column=6, value=dept)
-    c.font = f_italic_ul
-    c.alignment = Alignment(horizontal='left', vertical='center', indent=2)
+    c.alignment = center
+    
+    ws.merge_cells(start_row=3, start_column=start_days, end_row=3, end_column=end_days)
+    c = ws.cell(row=3, column=start_days, value=dept)
+    c.font = f_italic
+    c.alignment = Alignment(horizontal='left', vertical='center', indent=1)
 
+    # Шапка (строки 5 и 6)
     row_h1, row_h2 = 5, 6
     c = ws.cell(row=row_h1, column=1, value="№")
     c.font = f_head
     c.alignment = center
     c.fill = header_fill
     ws.merge_cells(start_row=row_h1, start_column=1, end_row=row_h2, end_column=1)
+    
     c = ws.cell(row=row_h1, column=2, value="Фамилия И.О.")
     c.font = f_head
     c.alignment = center
     c.fill = header_fill
     ws.merge_cells(start_row=row_h1, start_column=2, end_row=row_h2, end_column=2)
 
-    start_days = 3
-    end_days = start_days + days_in_month - 1
-    ws.merge_cells(start_row=row_h1, start_column=start_days,
-                   end_row=row_h1, end_column=end_days)
+    c = ws.cell(row=row_h1, column=3, value="Должность")
+    c.font = f_head
+    c.alignment = center
+    c.fill = header_fill
+    ws.merge_cells(start_row=row_h1, start_column=3, end_row=row_h2, end_column=3)
+
+    ws.merge_cells(start_row=row_h1, start_column=start_days, end_row=row_h1, end_column=end_days)
     c = ws.cell(row=row_h1, column=start_days, value="Числа месяца")
     c.font = f_head
     c.alignment = center
     c.fill = header_fill
 
-    col_hours = end_days + 1
+    vert_short = Alignment(horizontal='center', vertical='bottom', text_rotation=90, wrap_text=False)
+
     c = ws.cell(row=row_h1, column=col_hours, value="Всего")
     c.font = f_head
-    c.alignment = center
+    c.alignment = vert_short
     c.fill = header_fill
-    ws.merge_cells(start_row=row_h1, start_column=col_hours,
-                   end_row=row_h2, end_column=col_hours)
-    col_off = end_days + 2
+    ws.merge_cells(start_row=row_h1, start_column=col_hours, end_row=row_h2, end_column=col_hours)
+    
     c = ws.cell(row=row_h1, column=col_off, value="Выходные")
     c.font = f_head
-    c.alignment = center
+    c.alignment = vert_short
     c.fill = header_fill
-    ws.merge_cells(start_row=row_h1, start_column=col_off,
-                   end_row=row_h2, end_column=col_off)
+    ws.merge_cells(start_row=row_h1, start_column=col_off, end_row=row_h2, end_column=col_off)
 
     for i, dt in enumerate(day_types):
         col = start_days + i
         wd = WEEKDAYS_SHORT[date(y, m, i + 1).weekday()]
         c = ws.cell(row=row_h2, column=col, value=f"{i + 1}\n{wd}")
         c.font = f_cell
-        c.alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
-        if dt == 'weekend':
-            c.fill = weekend_fill
-        elif dt == 'holiday':
-            c.fill = holiday_fill
-        else:
-            c.fill = header_fill
+        c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        c.fill = weekend_fill if dt == 'weekend' else holiday_fill if dt == 'holiday' else header_fill
 
     for r in (row_h1, row_h2):
         for col in range(1, total_cols + 1):
@@ -690,154 +796,152 @@ def export_short_excel(tab, *args):
 
     row = row_h2 + 1
     grand = {'часы': 0.0, 'вых': 0}
-    max_col_len = {'часы': len("Всего"), 'вых': len("Выходные")}
-    max_day_len = {i: 1 for i in range(days_in_month)}
+    max_col_len = {'часы': 2, 'вых': 2}
+    max_day_w = {i: 1.0 for i in range(days_in_month)}
+    max_name_len, max_pos_len = 0, 0
 
     for idx, emp in enumerate(employees):
         emp_id = emp['id']
         day_data = ts.get(emp_id, {})
         values = [day_data.get(str(d), '') for d in range(1, days_in_month + 1)]
+        
+        name_text = format_name(emp.get('name', ''))
+        pos_text = emp.get('position', '').replace('\n', ' ').strip()
+        max_name_len = max(max_name_len, len(name_text))
+        max_pos_len = max(max_pos_len, len(pos_text))
+
         pos_name = emp.get('position', '')
-        night_on = bool(night_flags.get(pos_name, False))
-        no_weekends_on = bool(no_weekends_flags.get(pos_name, False))
-        res = analyze_row(values, day_types, night_on, no_weekends_on)
+        res = analyze_row(values, day_types, bool(night_flags.get(pos_name, False)), bool(no_weekends_flags.get(pos_name, False)))
         emp_over = overrides_all.get(emp_id, {})
 
-        if 'часы' in emp_over:
-            try:
-                hours_val = float(str(emp_over['часы']).replace(',', '.'))
-            except Exception:
-                hours_val = res.get('часы', 0.0)
-        else:
-            hours_val = res.get('часы', 0.0)
-
-        if 'вых' in emp_over:
-            try:
-                off_val = int(float(str(emp_over['вых']).replace(',', '.')))
-            except Exception:
-                off_val = res.get('вых', 0)
-        else:
-            off_val = res.get('вых', 0)
-
+        hours_val = float(str(emp_over.get('часы', res.get('часы', 0.0))).replace(',', '.'))
+        off_val = int(float(str(emp_over.get('вых', res.get('вых', 0))).replace(',', '.')))
         grand['часы'] += hours_val
         grand['вых'] += off_val
 
         ws.cell(row=row, column=1, value=idx + 1).font = f_cell
         ws.cell(row=row, column=1).alignment = center
-        c_name = ws.cell(row=row, column=2, value=format_name(emp.get('name', '')))
+        c_name = ws.cell(row=row, column=2, value=name_text)
         c_name.font = f_cell
-        c_name.alignment = left
+        c_name.alignment = left_nowrap  # <--- ФАМИЛИЯ БЕЗ ПЕРЕНОСА
+
+        c_pos = ws.cell(row=row, column=3, value=pos_text)
+        c_pos.font = f_cell
+        c_pos.alignment = left_wrap     # <--- ДОЛЖНОСТЬ С ПЕРЕНОСОМ
 
         for i, v in enumerate(values):
             col = start_days + i
-            if str(v).strip() == '0':
-                v = None
+            if str(v).strip() == '0': v = None
             c = ws.cell(row=row, column=col, value=v)
             c.font = f_cell
-            c.alignment = Alignment(horizontal='center', vertical='center')
+            c.alignment = center
             if v is not None:
-                max_day_len[i] = max(max_day_len[i], len(str(v)))
-            if day_types[i] == 'weekend':
-                c.fill = weekend_fill
-            elif day_types[i] == 'holiday':
-                c.fill = holiday_fill
+                w = _excel_visual_width(v)
+                if w > max_day_w[i]:
+                    max_day_w[i] = w
+            if day_types[i] == 'weekend': c.fill = weekend_fill
+            elif day_types[i] == 'holiday': c.fill = holiday_fill
 
         hours_val_fmt = fmt_hours(hours_val)
-        if str(hours_val_fmt).strip() in ('0', '0.0'):
-            hours_val_fmt = None
+        if str(hours_val_fmt).strip() in ('0', '0.0'): hours_val_fmt = None
         c = ws.cell(row=row, column=col_hours, value=hours_val_fmt)
-        if hours_val_fmt is not None:
-            max_col_len['часы'] = max(max_col_len['часы'], len(str(hours_val_fmt)))
+        if hours_val_fmt is not None: max_col_len['часы'] = max(max_col_len['часы'], len(str(hours_val_fmt)))
         c.font = f_cell
         c.alignment = center
 
-        off_val_fmt = off_val
-        if str(off_val_fmt).strip() in ('0', '0.0'):
-            off_val_fmt = None
+        off_val_fmt = off_val if off_val != 0 else None
         c = ws.cell(row=row, column=col_off, value=off_val_fmt)
-        if off_val_fmt is not None:
-            max_col_len['вых'] = max(max_col_len['вых'], len(str(off_val_fmt)))
+        if off_val_fmt is not None: max_col_len['вых'] = max(max_col_len['вых'], len(str(off_val_fmt)))
         c.font = f_cell
         c.alignment = center
 
-        ws.row_dimensions[row].height = 32
+        est_lines_pos = _estimate_wrap_lines(pos_text, max_chars=19)
+        ws.row_dimensions[row].height = max(16, est_lines_pos * 17)
+
         for col in range(1, total_cols + 1):
             ws.cell(row=row, column=col).border = border
         row += 1
 
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
     c = ws.cell(row=row, column=1, value="ИТОГО")
     c.font = f_head
     c.alignment = center
-    for col in range(1, 3):
+    for col in range(1, 4):
         ws.cell(row=row, column=col).border = border
         ws.cell(row=row, column=col).fill = total_fill
-    ws.merge_cells(start_row=row, start_column=start_days,
-                   end_row=row, end_column=end_days)
+
+    ws.merge_cells(start_row=row, start_column=start_days, end_row=row, end_column=end_days)
     for col in range(start_days, end_days + 1):
         ws.cell(row=row, column=col).border = border
         ws.cell(row=row, column=col).fill = total_fill
 
     grand_hours_fmt = fmt_hours(grand['часы'])
-    if str(grand_hours_fmt).strip() in ('0', '0.0'):
-        grand_hours_fmt = None
-    c = ws.cell(row=row, column=col_hours, value=grand_hours_fmt)
-    if grand_hours_fmt is not None:
-        max_col_len['часы'] = max(max_col_len['часы'], len(str(grand_hours_fmt)))
+    c = ws.cell(row=row, column=col_hours, value=grand_hours_fmt if str(grand_hours_fmt) not in ('0', '0.0') else None)
     c.font = f_head
     c.alignment = center
     c.border = border
     c.fill = total_fill
 
-    grand_off_fmt = grand['вых']
-    if str(grand_off_fmt).strip() in ('0', '0.0'):
-        grand_off_fmt = None
-    c = ws.cell(row=row, column=col_off, value=grand_off_fmt)
-    if grand_off_fmt is not None:
-        max_col_len['вых'] = max(max_col_len['вых'], len(str(grand_off_fmt)))
+    c = ws.cell(row=row, column=col_off, value=grand['вых'] if grand['вых'] != 0 else None)
     c.font = f_head
     c.alignment = center
     c.border = border
     c.fill = total_fill
-    ws.row_dimensions[row].height = 28
+    ws.row_dimensions[row].height = 20
 
-    row += 1
-    ws.row_dimensions[row].height = 32
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+    row += 2
+    ws.row_dimensions[row].height = 24
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
     c = ws.cell(row=row, column=1, value="Норма рабочего времени:")
-    c.font = f_norm_lbl
+    c.font = f_sig
     c.alignment = Alignment(horizontal='left', vertical='center')
-    ws.merge_cells(start_row=row, start_column=8, end_row=row, end_column=10)
-    c2 = ws.cell(row=row, column=8, value=f"{fmt_hours(norm_hours)} ч")
-    c2.font = f_norm_val
+    c2 = ws.cell(row=row, column=start_days, value=f"{fmt_hours(norm_hours)} ч")
+    c2.font = f_sig_bold
     c2.alignment = Alignment(horizontal='left', vertical='center')
 
-    ws.column_dimensions['A'].width = 5
-    max_name_len = max(
-        (len(format_name(emp.get('name', '') or '')) for emp in employees),
-        default=15)
-    ws.column_dimensions['B'].width = max(20, max_name_len * 1.2 + 5)
-    
-    # Авто-ширина для колонок дней месяца
-    for i in range(days_in_month):
-        w = max(4.5, max_day_len[i] * 1.2 + 1.0)
-        ws.column_dimensions[get_column_letter(start_days + i)].width = w
-        
-    col_h = get_column_letter(col_hours)
-    ws.column_dimensions[col_h].width = max(7.5, max_col_len['часы'] * 1.2 + 2.0)
-    col_o = get_column_letter(col_off)
-    ws.column_dimensions[col_o].width = max(9.5, max_col_len['вых'] * 1.2 + 2.0)
+    # --- ШИРИНЫ ---
+    EXCEL_OFFSET = 5.0 / 7.0
 
-    ws.row_dimensions[1].height = 45
-    ws.row_dimensions[2].height = 30
-    ws.row_dimensions[3].height = 30
-    ws.row_dimensions[4].height = 24
-    ws.row_dimensions[row_h1].height = 30
+    max_num = max(1, len(employees))
+    num_digits = len(str(max_num))
+    num_visual = max(2.57, num_digits * 0.8 + 0.4)
+    ws.column_dimensions['A'].width = num_visual + EXCEL_OFFSET
+
+    # Фамилия — жесткий минимум 16.0 (в единицах Excel) + запас 1.0 к самой длинной фамилии
+    max_name_visual = max((_excel_visual_width(format_name(emp.get('name', ''))) for emp in employees), default=0.0)
+    name_visual = max(16.0, max_name_visual + 1.0)
+    ws.column_dimensions['B'].width = name_visual + EXCEL_OFFSET
+
+    max_pos_visual = max((_excel_visual_width(emp.get('position', '').replace('\n', ' ').strip()) for emp in employees), default=0.0)
+    pos_visual = max(12.5, min(21.0, max_pos_visual + 0.5))
+    ws.column_dimensions['C'].width = pos_visual + EXCEL_OFFSET
+
+    for i in range(days_in_month):
+        day_visual = max(2.57, max_day_w[i] + 0.5)
+        ws.column_dimensions[get_column_letter(start_days + i)].width = day_visual + EXCEL_OFFSET
+
+    ws.column_dimensions[get_column_letter(col_hours)].width = (
+        max(2.57, max_col_len['часы'] * 0.55 + 0.5) + EXCEL_OFFSET
+    )
+    ws.column_dimensions[get_column_letter(col_off)].width = (
+        max(2.57, max_col_len['вых'] * 0.55 + 0.5) + EXCEL_OFFSET
+    )
+
+    ws.row_dimensions[1].height = 35
+    ws.row_dimensions[2].height = 25
+    ws.row_dimensions[3].height = 25
+    ws.row_dimensions[4].height = 10
+    ws.row_dimensions[row_h1].height = 20
     ws.row_dimensions[row_h2].height = 50
 
     if tab.legend_cb.active:
         row += 4
         row = _draw_legend(ws, row, total_cols, border, header_fill)
+
+    ws.page_margins.left = 0.2
+    ws.page_margins.right = 0.2
+    ws.page_margins.top = 0.2
+    ws.page_margins.bottom = 0.2
 
     ws.page_setup.orientation = 'landscape'
     ws.page_setup.fitToWidth = 1
@@ -850,8 +954,7 @@ def export_short_excel(tab, *args):
 
     _save_and_open(ws, wb, y, dept, key, "_short")
 
-
-def _save_and_open(ws, wb, y, dept, key, suffix):
+def _save_and_open(ws, wb, y, dept, key, suffix, custom_dir=None):
     def _sanitize_folder(name):
         bad = '\\/:*?"<>|'
         for ch in bad:
@@ -859,7 +962,12 @@ def _save_and_open(ws, wb, y, dept, key, suffix):
         return name.strip() or 'Без отдела'
 
     dept_folder = _sanitize_folder(dept)
-    out_dir = os.path.join(BASE_DIR, "Табель", dept_folder, str(y))
+    
+    if custom_dir:
+        out_dir = os.path.join(custom_dir, dept_folder, str(y))
+    else:
+        out_dir = os.path.join(BASE_DIR, "Табель", dept_folder, str(y))
+        
     try:
         os.makedirs(out_dir, exist_ok=True)
     except Exception as e:
@@ -875,10 +983,12 @@ def _save_and_open(ws, wb, y, dept, key, suffix):
     except Exception as e:
         print("Ошибка сохранения Excel:", e)
         return
-    try:
-        os.startfile(path)
-    except Exception:
+        
+    if not custom_dir:
         try:
-            webbrowser.open(f"file://{path}")
+            os.startfile(path)
         except Exception:
-            pass
+            try:
+                webbrowser.open(f"file://{path}")
+            except Exception:
+                pass

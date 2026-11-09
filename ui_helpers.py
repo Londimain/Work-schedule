@@ -209,23 +209,29 @@ class NoOverscrollEffect(ScrollEffect):
 def bind_enter_key(popup, callback):
     """Привязывает Enter (и Numpad Enter) к вызову callback при открытом popup."""
     from kivy.core.window import Window
+    from kivy.clock import Clock
+    
     def _on_key_down(window, key, scancode, codepoint, modifiers):
         if key in (13, 271):  # 13 - Enter, 271 - Numpad Enter
             if Window.children and Window.children[0] is popup:
                 callback()
                 return True
         return False
+        
     Window.bind(on_key_down=_on_key_down)
     
     def _on_dismiss(*args):
-        Window.unbind(on_key_down=_on_key_down)
+        # Откладываем отвязку на следующий кадр, чтобы не ломать итерацию по колбэкам в Window
+        Clock.schedule_once(lambda dt: Window.unbind(on_key_down=_on_key_down), 0)
         
     popup.bind(on_dismiss=_on_dismiss)
+
 
 def ask_password_and_run(password, on_success,
                          title="Подтверждение удаления",
                          description=None,
-                         btn_text="Удалить"):
+                         btn_text="Удалить",
+                         password_prompt="Введите пароль для удаления:"):
     """Попап с запросом пароля. При верном пароле вызывает on_success()."""
     from kivy.uix.popup import Popup
     from kivy.uix.boxlayout import BoxLayout
@@ -249,7 +255,7 @@ def ask_password_and_run(password, on_success,
         content.add_widget(d)
 
     content.add_widget(Label(
-        text="Введите пароль для удаления:",
+        text=password_prompt,
         color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14),
         halign='center', valign='middle',
         outline_color=(0, 0, 0, 1), outline_width=1,
@@ -286,14 +292,16 @@ def ask_password_and_run(password, on_success,
     content.add_widget(btns)
 
     popup = Popup(title=title, content=content,
-                  size_hint=(0.45, None), height=dp(220),  # <--- Было 0.48 и 280
+                  size_hint=(0.45, None), height=dp(220),
                   title_color=LABEL_LIGHT, title_font=FONT_NAME,
                   auto_dismiss=False) 
 
     def do_ok(*a):
         if pw.text == password:
             popup.dismiss()
-            on_success()
+            
+            from kivy.clock import Clock
+            Clock.schedule_once(lambda dt: on_success(), 0.1)
         else:
             err.text = "Неверный пароль"
             pw.text = ""

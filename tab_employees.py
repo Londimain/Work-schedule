@@ -18,8 +18,10 @@ from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 from kivy.uix.textinput import TextInput
-from kivy.uix.button import Button
-from ui_widgets import CenteredSpinner, HoverButton
+
+# --- ЗАМЕНА СТАНДАРТНОЙ КНОПКИ НА КНОПКУ С ЭФФЕКТОМ НАВЕДЕНИЯ ---
+from ui_widgets import CenteredSpinner, HoverButton, _is_widget_covered
+from ui_widgets import HoverButton as Button 
 
 from config import (FONT_NAME, LABEL_LIGHT, DEFAULT_POSITIONS,
                     DEFAULT_DEPARTMENTS, DEFAULT_ORG,
@@ -34,9 +36,59 @@ from ui_helpers import (add_bottom_border, add_top_border,
                         bind_enter_key)
 
 # ---------------------------------------------------------------------------
+class HoverRow(BoxLayout):
+    """Строка таблицы с эффектом легкого осветления при наведении мыши."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._hovering = False
+        with self.canvas.before:
+            self._bg_color = Color(0, 0, 0, 0) # Прозрачный по умолчанию
+            self._bg_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self._update_rect, size=self._update_rect)
+        
+        Window.bind(mouse_pos=self._on_mouse_pos)
+        self.bind(parent=self._on_parent)
+
+    def _on_parent(self, instance, parent):
+        if parent is None:
+            try:
+                Window.unbind(mouse_pos=self._on_mouse_pos)
+            except Exception:
+                pass
+
+    def _update_rect(self, *a):
+        self._bg_rect.pos = self.pos
+        self._bg_rect.size = self.size
+
+    def _on_mouse_pos(self, window, pos):
+        if not self.get_root_window() or self.disabled:
+            return
+        
+        # --- ПРОВЕРКА: ЕСЛИ ПЕРЕКРЫТО ПОПАПОМ, НЕ ПОДСВЕЧИВАЕМ ---
+        if _is_widget_covered(self):
+            if self._hovering:
+                self._hovering = False
+                self._bg_color.rgba = (0, 0, 0, 0)
+            return
+
+        try:
+            wx, wy = self.to_window(self.x, self.y)
+            if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
+                if not self._hovering:
+                    self._hovering = True
+                    self._bg_color.rgba = (1, 1, 1, 0.1) # Легкое осветление
+            else:
+                if self._hovering:
+                    self._hovering = False
+                    self._bg_color.rgba = (0, 0, 0, 0)
+        except Exception:
+            pass
+
+
 class RightClickBox(BoxLayout):
     SELECT_COLOR = (1.00, 0.72, 0.10, 1)
     SELECT_TH = 3
+    HOVER_BG = (1, 1, 1, 0.1) # Эффект при наведении
 
     def __init__(self, on_right_click=None, on_left_click=None, **kwargs):
         super().__init__(**kwargs)
@@ -47,8 +99,53 @@ class RightClickBox(BoxLayout):
         self._sel_bottom = None
         self._sel_left = None
         self._sel_right = None
+        self._hovering = False
+
+        with self.canvas.before:
+            self._bg_color = Color(0, 0, 0, 0)
+            self._bg_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self._update_bg, size=self._update_bg)
+
         self.bind(pos=self._update_sel, size=self._update_sel)
         Clock.schedule_once(self._init_sel_canvas, 0)
+
+        Window.bind(mouse_pos=self._on_mouse_pos)
+        self.bind(parent=self._on_parent)
+
+    def _on_parent(self, instance, parent):
+        if parent is None:
+            try:
+                Window.unbind(mouse_pos=self._on_mouse_pos)
+            except Exception:
+                pass
+
+    def _update_bg(self, *a):
+        self._bg_rect.pos = self.pos
+        self._bg_rect.size = self.size
+
+    def _on_mouse_pos(self, window, pos):
+        if not self.get_root_window() or self.disabled:
+            return
+        
+        # --- ПРОВЕРКА: ЕСЛИ ПЕРЕКРЫТО ПОПАПОМ, НЕ ПОДСВЕЧИВАЕМ ---
+        if _is_widget_covered(self):
+            if self._hovering:
+                self._hovering = False
+                self._bg_color.rgba = (0, 0, 0, 0)
+            return
+
+        try:
+            wx, wy = self.to_window(self.x, self.y)
+            if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
+                if not self._hovering:
+                    self._hovering = True
+                    self._bg_color.rgba = self.HOVER_BG
+            else:
+                if self._hovering:
+                    self._hovering = False
+                    self._bg_color.rgba = (0, 0, 0, 0)
+        except Exception:
+            pass
 
     def _init_sel_canvas(self, dt=0):
         if self._sel_top is not None:
@@ -111,6 +208,19 @@ class EmployeesTab(BoxLayout):
         super().__init__(orientation='vertical', **kwargs)
         self.app = app
         self._collapsed_depts = get_local_collapsed_depts() 
+        
+        # --- ПЕРЕМЕННЫЕ ДЛЯ АВТООБНОВЛЕНИЯ ОКОН ---
+        self.active_positions_popup = None
+        self.active_positions_rebuild = None
+        self.active_depts_popup = None
+        self.active_depts_rebuild = None
+        self.active_edit_popup = None
+        self.active_edit_rebuild = None
+        self.active_dept_editor_popup = None      
+        self.active_dept_editor_rebuild = None    
+        self.active_dept_picker_popup = None
+        self.active_dept_picker_rebuild = None
+        # -------------------------------------------
         
         with self.canvas.before:
             Color(*config.TABLE_BG)
@@ -461,7 +571,6 @@ class EmployeesTab(BoxLayout):
         if display_num is None:
             display_num = idx + 1
 
-        # Уменьшили высоту строки с 56 до 40
         row = RightClickBox(size_hint_y=None, height=dp(40), spacing=0)
         row._on_right_click = (
             lambda t, i=idx, w=row: self._show_employee_menu(i, t, w)
@@ -602,6 +711,20 @@ class EmployeesTab(BoxLayout):
             for num, i in enumerate(others, start=1):
                 self._add_employee_row(i, employees[i], num)
 
+    def update_open_popups(self):
+        """Вызывается из main.py для обновления открытых окон..."""
+        if getattr(self, 'active_positions_popup', None) and getattr(self, 'active_positions_rebuild', None):
+            Clock.schedule_once(lambda dt: self.active_positions_rebuild(), 0)
+        if getattr(self, 'active_depts_popup', None) and getattr(self, 'active_depts_rebuild', None):
+            Clock.schedule_once(lambda dt: self.active_depts_rebuild(), 0)
+        if getattr(self, 'active_edit_popup', None) and getattr(self, 'active_edit_rebuild', None):
+            Clock.schedule_once(lambda dt: self.active_edit_rebuild(), 0)
+        if getattr(self, 'active_dept_editor_popup', None) and getattr(self, 'active_dept_editor_rebuild', None):
+            Clock.schedule_once(lambda dt: self.active_dept_editor_rebuild(), 0)
+            
+        if getattr(self, 'active_dept_picker_popup', None) and getattr(self, 'active_dept_picker_rebuild', None):
+            Clock.schedule_once(lambda dt: self.active_dept_picker_rebuild(), 0)
+
     def add_employee(self):
         self.show_edit_popup(None)
 
@@ -613,7 +736,7 @@ class EmployeesTab(BoxLayout):
 
         def _do():
             self.app.data['employees'].pop(idx)
-            save_data(self.app.data)
+            self.app.safe_save(self.app.data)
             self.refresh()
 
         ask_password_and_run(
@@ -697,7 +820,49 @@ class EmployeesTab(BoxLayout):
         pos_w.height = dp(32)
         row_pos.add_widget(pos_w)
         fields.add_widget(row_pos)
-        
+
+        # --- Логика автообновления списков Отделов и Должностей ---
+        prev_depts_set = set(sorted_departments)
+        prev_pos_set = set(sorted_positions)
+
+        def rebuild_choices():
+            """Обновляет .values спиннеров, не трогая то, что пользователь уже ввёл."""
+            try:
+                cur_depts = sorted(self.app.data.get('departments', []),
+                                   key=lambda s: s.lower())
+                cur_pos = self.app.data.get('positions', []) or list(DEFAULT_POSITIONS)
+                cur_pos = sorted(cur_pos, key=lambda s: s.lower())
+
+                new_depts_set = set(cur_depts)
+                new_pos_set = set(cur_pos)
+
+                # Автопереименование: если выбранное значение исчезло,
+                # а в списке появилось ровно одно новое — считаем это переименованием.
+                cur_dept_text = dept_w.text.strip()
+                if cur_dept_text in prev_depts_set and cur_dept_text not in new_depts_set:
+                    rem = prev_depts_set - new_depts_set
+                    add = new_depts_set - prev_depts_set
+                    if len(rem) == 1 and len(add) == 1:
+                        dept_w.text = next(iter(add))
+
+                cur_pos_text = pos_w.text.strip()
+                if cur_pos_text in prev_pos_set and cur_pos_text not in new_pos_set:
+                    rem = prev_pos_set - new_pos_set
+                    add = new_pos_set - prev_pos_set
+                    if len(rem) == 1 and len(add) == 1:
+                        pos_w.text = next(iter(add))
+
+                dept_w.spinner.values = cur_depts
+                pos_w.spinner.values = cur_pos
+
+                prev_depts_set.clear()
+                prev_depts_set.update(new_depts_set)
+                prev_pos_set.clear()
+                prev_pos_set.update(new_pos_set)
+            except Exception:
+                pass
+        # ----------------------------------------------------------
+
         row_contract = BoxLayout(size_hint_y=None, height=dp(38), spacing=8)
         row_contract.add_widget(Label(
             text="На контракте",
@@ -738,7 +903,6 @@ class EmployeesTab(BoxLayout):
             if not name:
                 return
                 
-            # Проверка на дубликат
             is_duplicate = False
             for i, e in enumerate(self.app.data['employees']):
                 if i != idx and e.get('name', '').strip().lower() == name.lower():
@@ -775,7 +939,7 @@ class EmployeesTab(BoxLayout):
                 self.app.data['employees'][idx] = new_emp
             else:
                 self.app.data['employees'].append(new_emp)
-            save_data(self.app.data)
+            self.app.safe_save(self.app.data)
             popup.dismiss()
             self.refresh()
 
@@ -783,6 +947,18 @@ class EmployeesTab(BoxLayout):
         cancel_btn.bind(on_press=popup.dismiss)
         name_w.bind(on_text_validate=lambda *a: on_save())
         bind_enter_key(popup, on_save)
+
+        # --- РЕГИСТРАЦИЯ ДЛЯ АВТООБНОВЛЕНИЯ ---
+        self.active_edit_popup = popup
+        self.active_edit_rebuild = rebuild_choices
+
+        def on_edit_dismiss(*args):
+            self.active_edit_popup = None
+            self.active_edit_rebuild = None
+
+        popup.bind(on_dismiss=on_edit_dismiss)
+        # --------------------------------------
+
         popup.open()
 
     def show_positions_popup(self):
@@ -827,39 +1003,42 @@ class EmployeesTab(BoxLayout):
             def _do():
                 flags = self.app.data.setdefault('night_flags', {})
                 flags[name] = not flags.get(name, False)
-                save_data(self.app.data)
+                self.app.safe_save(self.app.data)
                 rebuild_list()
             ask_password_and_run(
                 DELETE_PASSWORD, _do, 
                 title="Изменение настройки", 
                 description=f"Изменить настройку «Ночные» для\n«{name}»?",
-                btn_text="Изменить")
+                btn_text="Изменить",
+                password_prompt="Введите пароль для изменения:")
 
         def toggle_overtime(name):
             rebuild_list()
             def _do():
                 flags = self.app.data.setdefault('overtime_flags', {})
                 flags[name] = not flags.get(name, False)
-                save_data(self.app.data)
+                self.app.safe_save(self.app.data)
                 rebuild_list()
             ask_password_and_run(
                 DELETE_PASSWORD, _do, 
                 title="Изменение настройки", 
                 description=f"Изменить настройку «Сверхурочные» для\n«{name}»?",
-                btn_text="Изменить")
+                btn_text="Изменить",
+                password_prompt="Введите пароль для изменения:")
 
         def toggle_no_weekends(name):
             rebuild_list()
             def _do():
                 flags = self.app.data.setdefault('no_weekends_flags', {})
                 flags[name] = not flags.get(name, False)
-                save_data(self.app.data)
+                self.app.safe_save(self.app.data)
                 rebuild_list()
             ask_password_and_run(
                 DELETE_PASSWORD, _do, 
                 title="Изменение настройки", 
                 description=f"Изменить настройку «Без вых.» для\n«{name}»?",
-                btn_text="Изменить")
+                btn_text="Изменить",
+                password_prompt="Введите пароль для изменения:")
 
         def delete_pos(ii):
             name = self.app.data['positions'][ii]
@@ -871,7 +1050,7 @@ class EmployeesTab(BoxLayout):
                     self.app.data.get('overtime_flags', {}).pop(name, None)
                     self.app.data.get('no_weekends_flags', {}).pop(name, None)
                     self.app.data.get('holidays_only_flags', {}).pop(name, None)
-                    save_data(self.app.data)
+                    self.app.safe_save(self.app.data)
                     rebuild_list()
                 except Exception:
                     pass
@@ -918,7 +1097,6 @@ class EmployeesTab(BoxLayout):
                     p.dismiss()
                     return
 
-                # Проверка на дубликат
                 if new_name in self.app.data['positions']:
                     p.dismiss()
                     err_content = BoxLayout(orientation='vertical', spacing=10, padding=10)
@@ -947,7 +1125,7 @@ class EmployeesTab(BoxLayout):
                 for emp in self.app.data['employees']:
                     if emp.get('position', '') == old_name:
                         emp['position'] = new_name
-                save_data(self.app.data)
+                self.app.safe_save(self.app.data)
                 p.dismiss()
                 rebuild_list()
                 self.refresh()
@@ -956,14 +1134,17 @@ class EmployeesTab(BoxLayout):
             cancel.bind(on_press=p.dismiss)
             edit_wrap.bind(on_text_validate=lambda *a: on_ok())
             bind_enter_key(p, on_ok)
-            p.open()
+            
+            # ЗАДЕРЖКА ДЛЯ ОТКРЫТИЯ ОКНА
+            Clock.schedule_once(lambda dt: p.open(), 0.1)
 
         def rebuild_list():
             list_grid.clear_widgets()
             items = [(i, p) for i, p in enumerate(self.app.data['positions'])]
             items.sort(key=lambda x: x[1].lower())
             for i, p in items:
-                row = BoxLayout(size_hint_y=None, height=dp(48), spacing=0)
+                # Используем HoverRow вместо обычного BoxLayout
+                row = HoverRow(size_hint_y=None, height=dp(48), spacing=0)
                 
                 add_top_border(row, color=LABEL_LIGHT, thickness=1)
                 add_bottom_border(row, color=LABEL_LIGHT, thickness=1)
@@ -1051,7 +1232,6 @@ class EmployeesTab(BoxLayout):
             if not txt:
                 return
 
-            # Проверка на дубликат
             if txt in self.app.data['positions']:
                 err_content = BoxLayout(orientation='vertical', spacing=10, padding=10)
                 err_content.add_widget(Label(text=f"Должность «{txt}»\nуже существует!", color=LABEL_LIGHT, halign='center', valign='middle', font_name=FONT_NAME, font_size=dp(15)))
@@ -1067,7 +1247,7 @@ class EmployeesTab(BoxLayout):
             self.app.data.setdefault('night_flags', {}).setdefault(txt, False)
             self.app.data.setdefault('overtime_flags', {}).setdefault(txt, False)
             self.app.data.setdefault('no_weekends_flags', {}).setdefault(txt, False)
-            save_data(self.app.data)
+            self.app.safe_save(self.app.data)
             new_pos_wrap.text = ''
             rebuild_list()
 
@@ -1085,7 +1265,18 @@ class EmployeesTab(BoxLayout):
                       size_hint=(0.9, 0.65), title_color=LABEL_LIGHT,
                       title_font=FONT_NAME, auto_dismiss=False)
         close_btn.bind(on_press=popup.dismiss)
+        
+        # --- ПРИВЯЗКА ДЛЯ АВТООБНОВЛЕНИЯ ---
+        self.active_positions_popup = popup
+        self.active_positions_rebuild = rebuild_list
+        def on_pos_dismiss(*args):
+            self.active_positions_popup = None
+            self.active_positions_rebuild = None
+        popup.bind(on_dismiss=on_pos_dismiss)
+        # -----------------------------------
+
         popup.open()
+        rebuild_list()
 
     def show_departments_popup(self):
         self.app.data.setdefault('departments', list(DEFAULT_DEPARTMENTS))
@@ -1164,7 +1355,7 @@ class EmployeesTab(BoxLayout):
                     for emp in self.app.data['employees']:
                         if emp.get('department', '') == name:
                             emp['department'] = ''
-                    save_data(self.app.data)
+                    self.app.safe_save(self.app.data)
                     rebuild_list()
                     self.refresh()
                 except Exception:
@@ -1321,39 +1512,62 @@ class EmployeesTab(BoxLayout):
                         if not new_name or new_name == rename_old:
                             rp.dismiss()
                             return
+                            
                         sp_list = self.app.data.setdefault(
                             'signer_positions', ['Энергетик'])
-                        if new_name in sp_list:
-                            rp.dismiss()
-                            return
-                        sp_list[sp_list.index(rename_old)] = new_name
+                            
+                        if not isinstance(sp_list, list):
+                            sp_list = list(sp_list)
+                            self.app.data['signer_positions'] = sp_list
 
-                        signers_map = self.app.data.get(
-                            'department_signer', {})
+                        # Удаляем все вхождения старого имени (без учета регистра)
+                        sp_list[:] = [x for x in sp_list if str(x).lower() != rename_old.lower()]
+                        
+                        if new_name not in sp_list:
+                            sp_list.append(new_name)
+                        
+                        # Очищаем дубликаты, оставляя только уникальные (без учета регистра)
+                        seen = set()
+                        unique_sp = []
+                        for x in sp_list:
+                            x_lower = str(x).lower()
+                            if x_lower not in seen:
+                                unique_sp.append(x)
+                                seen.add(x_lower)
+                        sp_list[:] = unique_sp
+
+                        # Обновляем должность у подписантов отделов
+                        signers_map = self.app.data.get('department_signer', {})
                         for _d, ent in signers_map.items():
-                            if ent.get('position') == rename_old:
+                            if ent.get('position', '').lower() == rename_old.lower():
                                 ent['position'] = new_name
 
-                        if pos_w.text.strip() == rename_old:
+                        # Обновляем текущее поле ввода, если там было старое имя
+                        if pos_w.text.strip().lower() == rename_old.lower():
                             pos_w.text = new_name
 
-                        save_data(self.app.data)
+                        self.app.safe_save(self.app.data)
                         rp.dismiss()
-                        rebuild_rows(search_input.text)
-                        rebuild_list()
+                        
+                        # Откладываем перерисовку на следующий кадр, 
+                        # чтобы Kivy успел корректно закрыть окно rp (иначе может зависнуть)
+                        Clock.schedule_once(lambda dt: rebuild_rows(search_input.text), 0)
+                        Clock.schedule_once(lambda dt: rebuild_list(), 0)
 
                     ok.bind(on_press=do_rename)
                     cancel.bind(on_press=rp.dismiss)
                     new_wrap.bind(on_text_validate=lambda *a: do_rename())
                     bind_enter_key(rp, do_rename)
-                    rp.open()
+                    
+                    # ЗАДЕРЖКА ДЛЯ ОТКРЫТИЯ ОКНА
+                    Clock.schedule_once(lambda dt: rp.open(), 0.1)
 
                 def _delete(name):
                     signers_map = self.app.data.get('department_signer', {})
                     current_depts = self.app.data.get('departments', [])
                     
                     used_by = [d for d, ent in signers_map.items()
-                               if ent.get('position') == name and d in current_depts]
+                               if ent.get('position', '').lower() == name.lower() and d in current_depts]
                     
                     if used_by:
                         c = BoxLayout(orientation='vertical',
@@ -1379,7 +1593,9 @@ class EmployeesTab(BoxLayout):
                                    title_font=FONT_NAME, auto_dismiss=False)
                         ok.bind(on_press=p2.dismiss)
                         bind_enter_key(p2, p2.dismiss)
-                        p2.open()
+                        
+                        # ЗАДЕРЖКА ДЛЯ ОТКРЫТИЯ ОКНА
+                        Clock.schedule_once(lambda dt: p2.open(), 0.1)
                         return
 
                     def _do():
@@ -1388,10 +1604,10 @@ class EmployeesTab(BoxLayout):
                             sp_list.remove(name)
                         
                         for d in list(signers_map.keys()):
-                            if signers_map[d].get('position') == name:
+                            if signers_map[d].get('position', '').lower() == name.lower():
                                 signers_map.pop(d, None)
                                 
-                        save_data(self.app.data)
+                        self.app.safe_save(self.app.data)
                         rebuild_rows(search_input.text)
                         rebuild_list()
 
@@ -1420,7 +1636,8 @@ class EmployeesTab(BoxLayout):
                         return
                         
                     for nm in sp_list:
-                        row = BoxLayout(size_hint_y=None,
+                        # Используем HoverRow вместо BoxLayout
+                        row = HoverRow(size_hint_y=None,
                                         height=dp(40), spacing=4)
                         b = Button(text=nm, size_hint_x=1,
                                    font_name=FONT_NAME, font_size=dp(14),
@@ -1435,7 +1652,8 @@ class EmployeesTab(BoxLayout):
                             bold=True,
                             background_color=(0.35, 0.55, 0.85, 1),
                             color=(1, 1, 1, 1))
-                        ren_btn.bind(on_press=lambda *a, x=nm: _rename(x))
+                        # ЗАДЕРЖКА ДЛЯ ОТКРЫТИЯ ОКНА
+                        ren_btn.bind(on_press=lambda *a, x=nm: Clock.schedule_once(lambda dt: _rename(x), 0.1))
                         row.add_widget(ren_btn)
 
                         del_btn = Button(
@@ -1445,7 +1663,7 @@ class EmployeesTab(BoxLayout):
                             bold=True,
                             background_color=(0.9, 0.35, 0.35, 1),
                             color=(1, 1, 1, 1))
-                        del_btn.bind(on_press=lambda *a, x=nm: _delete(x))
+                        del_btn.bind(on_press=lambda *a, x=nm: Clock.schedule_once(lambda dt: _delete(x), 0.1))
                         row.add_widget(del_btn)
 
                         grid.add_widget(row)
@@ -1463,7 +1681,19 @@ class EmployeesTab(BoxLayout):
                 close_b.bind(on_press=picker.dismiss)
                 inner.add_widget(close_b)
                 picker.content = inner
-                picker.open()
+
+                # --- ДОБАВИТЬ ЭТО ДЛЯ АВТООБНОВЛЕНИЯ ПИКЕРА ---
+                self.active_dept_picker_popup = picker
+                self.active_dept_picker_rebuild = lambda: rebuild_rows(search_input.text)
+
+                def on_picker_dismiss(*args):
+                    self.active_dept_picker_popup = None
+                    self.active_dept_picker_rebuild = None
+
+                picker.bind(on_dismiss=on_picker_dismiss)
+                # ------------------------------------------------
+
+                Clock.schedule_once(lambda dt: picker.open(), 0.1)
 
             pos_btn.bind(on_press=_open_positions_picker)
 
@@ -1521,7 +1751,6 @@ class EmployeesTab(BoxLayout):
                     err_popup.open()
                     return
 
-                # Проверка на дубликат
                 if (new_name != old_name and new_name in self.app.data['departments']):
                     p.dismiss()
                     err_content = BoxLayout(orientation='vertical', spacing=10, padding=10)
@@ -1535,7 +1764,7 @@ class EmployeesTab(BoxLayout):
 
                 sp = self.app.data.setdefault('signer_positions',
                                               ['Энергетик'])
-                if new_pos not in sp:
+                if new_pos.lower() not in [x.lower() for x in sp]:
                     sp.append(new_pos)
 
                 if is_new:
@@ -1550,17 +1779,46 @@ class EmployeesTab(BoxLayout):
                         self.app.data.get('department_energetic', {}).pop(
                             old_name, None)
                 signers[new_name] = {'position': new_pos, 'name': new_fio}
-                save_data(self.app.data)
+                self.app.safe_save(self.app.data)
                 p.dismiss()
                 rebuild_list()
                 self.refresh()
+
+            # --- АВТООБНОВЛЕНИЕ ПОЛЯ «ДОЛЖНОСТЬ» ПРИ ВНЕШНЕМ ПЕРЕИМЕНОВАНИИ ---
+            prev_pos_set = set(self.app.data.get('signer_positions', ['Энергетик']))
+
+            def rebuild_dept_editor():
+                try:
+                    new_pos_set = set(self.app.data.get('signer_positions', ['Энергетик']))
+                    cur_val = pos_w.text.strip()
+                    if cur_val in prev_pos_set and cur_val not in new_pos_set:
+                        rem = prev_pos_set - new_pos_set
+                        add = new_pos_set - prev_pos_set
+                        if len(rem) == 1 and len(add) == 1:
+                            pos_w.text = next(iter(add))
+                    prev_pos_set.clear()
+                    prev_pos_set.update(new_pos_set)
+                except Exception:
+                    pass
+
+            self.active_dept_editor_popup = p
+            self.active_dept_editor_rebuild = rebuild_dept_editor
+
+            def on_dept_editor_dismiss(*args):
+                self.active_dept_editor_popup = None
+                self.active_dept_editor_rebuild = None
+
+            p.bind(on_dismiss=on_dept_editor_dismiss)
+            # -------------------------------------------------------------------
 
             ok.bind(on_press=on_ok)
             cancel.bind(on_press=p.dismiss)
             edit_wrap.bind(on_text_validate=lambda *a: on_ok())
             fio_w.bind(on_text_validate=lambda *a: on_ok())
             bind_enter_key(p, on_ok)
-            p.open()
+            
+            # ЗАДЕРЖКА ДЛЯ ОТКРЫТИЯ ОКНА
+            Clock.schedule_once(lambda dt: p.open(), 0.1)
 
         def rebuild_list():
             list_grid.clear_widgets()
@@ -1568,7 +1826,8 @@ class EmployeesTab(BoxLayout):
             items.sort(key=lambda x: x[1].lower())
             
             for display_num, (i, d) in enumerate(items, start=1):
-                row = BoxLayout(size_hint_y=None, height=dp(42), spacing=0)
+                # Используем HoverRow вместо BoxLayout
+                row = HoverRow(size_hint_y=None, height=dp(42), spacing=0)
                 row.add_widget(vsep(color=LABEL_LIGHT))
 
                 r_num = Label(text=str(display_num), size_hint_x=None, width=dp(40), color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14), halign='center', valign='middle')
@@ -1620,7 +1879,18 @@ class EmployeesTab(BoxLayout):
                       size_hint=(0.80, 0.65), title_color=LABEL_LIGHT,
                       title_font=FONT_NAME, auto_dismiss=False)
         close_btn.bind(on_press=popup.dismiss)
+        
+        # --- ПРИВЯЗКА ДЛЯ АВТООБНОВЛЕНИЯ ---
+        self.active_depts_popup = popup
+        self.active_depts_rebuild = rebuild_list
+        def on_depts_dismiss(*args):
+            self.active_depts_popup = None
+            self.active_depts_rebuild = None
+        popup.bind(on_dismiss=on_depts_dismiss)
+        # -----------------------------------
+
         popup.open()
+        rebuild_list()
         
     def _toggle_dept_collapse(self, name):
         if name in self._collapsed_depts:

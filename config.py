@@ -9,6 +9,143 @@ import os
 import platform
 import sys
 import webbrowser
+# =========================================================================
+# ТЕМЫ ОФОРМЛЕНИЯ
+# =========================================================================
+import json as _json
+
+_THEME_COLORS = {
+    'standard': {
+        'WEEKEND_BG':     (1.00, 0.82, 0.82, 1),
+        'WEEKEND_FG':     (0.55, 0.05, 0.05, 1),
+        'HOLIDAY_BG':     (1.00, 0.94, 0.70, 1),
+        'HOLIDAY_FG':     (0.55, 0.35, 0.00, 1),
+        'WORKDAY_BG':     (1.00, 1.00, 1.00, 1),
+        'WORKDAY_FG':     (0.05, 0.05, 0.05, 1),
+        'HEADER_BG':      (0.88, 0.88, 0.88, 1),
+        'HEADER_FG':      (0.05, 0.05, 0.05, 1),
+        'DEPT_BAR_BG':    (0.20, 0.30, 0.55, 1),
+        'DEPT_BAR_FG':    (1.00, 1.00, 1.00, 1),
+        'VHEADER_BG':     (0.85, 0.88, 0.92, 1),
+        'VHEADER_FG':     (0.05, 0.05, 0.05, 1),
+        'HEADER_DIVIDER': (0.00, 0.00, 0.00, 1),
+        'SPINNER_BG':     (0.20, 0.30, 0.55, 1),
+        'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
+        'TOPBAR_BG':      (0.11, 0.12, 0.15, 1),
+        'WINDOW_BG':      (0.15, 0.15, 0.15, 1),
+        'TABLE_BG':       (0.15, 0.15, 0.15, 1),
+        'EXIT_BG':        (0.20, 0.30, 0.55, 1),
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
+        'SELECTED_ROW_BG': (0.22, 0.28, 0.38, 1), # Тёмно-синеватый
+    },
+    'blue': {
+        'WEEKEND_BG':     (0.82, 0.88, 1.00, 1),
+        'WEEKEND_FG':     (0.10, 0.20, 0.60, 1),
+        'HOLIDAY_BG':     (0.82, 0.92, 1.00, 1),
+        'HOLIDAY_FG':     (0.10, 0.30, 0.60, 1),
+        'WORKDAY_BG':     (0.96, 0.98, 1.00, 1),
+        'WORKDAY_FG':     (0.05, 0.10, 0.25, 1),
+        'HEADER_BG':      (0.78, 0.85, 0.96, 1),
+        'HEADER_FG':      (0.05, 0.15, 0.40, 1),
+        'DEPT_BAR_BG':    (0.10, 0.25, 0.60, 1),
+        'DEPT_BAR_FG':    (1.00, 1.00, 1.00, 1),
+        'VHEADER_BG':     (0.78, 0.85, 0.96, 1),
+        'VHEADER_FG':     (0.05, 0.10, 0.30, 1),
+        'HEADER_DIVIDER': (0.10, 0.20, 0.40, 1),
+        'SPINNER_BG':     (0.25, 0.55, 0.95, 1), # <--- Яркий, контрастный синий
+        'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
+        'TOPBAR_BG':      (0.10, 0.15, 0.25, 1),
+        'WINDOW_BG':      (0.08, 0.12, 0.20, 1),
+        'TABLE_BG':       (0.08, 0.12, 0.20, 1),
+        'EXIT_BG':        (0.20, 0.45, 0.80, 1),  # <--- Яркий, контрастный синий
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
+        'SELECTED_ROW_BG': (0.22, 0.28, 0.38, 1), # Тёмно-синеватый
+    },
+    'green': {
+        'WEEKEND_BG':     (0.85, 1.00, 0.88, 1),
+        'WEEKEND_FG':     (0.10, 0.45, 0.15, 1),
+        'HOLIDAY_BG':     (0.92, 1.00, 0.85, 1),
+        'HOLIDAY_FG':     (0.25, 0.50, 0.10, 1),
+        'WORKDAY_BG':     (0.96, 1.00, 0.96, 1),
+        'WORKDAY_FG':     (0.05, 0.20, 0.10, 1),
+        'HEADER_BG':      (0.82, 0.94, 0.85, 1),
+        'HEADER_FG':      (0.05, 0.30, 0.15, 1),
+        'DEPT_BAR_BG':    (0.15, 0.45, 0.25, 1),
+        'DEPT_BAR_FG':    (1.00, 1.00, 1.00, 1),
+        'VHEADER_BG':     (0.82, 0.94, 0.85, 1),
+        'VHEADER_FG':     (0.05, 0.25, 0.10, 1),
+        'HEADER_DIVIDER': (0.10, 0.30, 0.15, 1),
+        'SPINNER_BG':     (0.20, 0.65, 0.35, 1), # <--- Яркий, сочный зелёный
+        'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
+        'TOPBAR_BG':      (0.10, 0.20, 0.10, 1),
+        'WINDOW_BG':      (0.08, 0.15, 0.08, 1),
+        'TABLE_BG':       (0.08, 0.15, 0.08, 1),
+        'EXIT_BG':        (0.15, 0.55, 0.25, 1),  # <--- Яркий, сочный зелёный
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
+        'SELECTED_ROW_BG': (0.22, 0.28, 0.38, 1), # Тёмно-синеватый        
+    },
+    'warm': {
+        'WEEKEND_BG':     (1.00, 0.88, 0.80, 1),
+        'WEEKEND_FG':     (0.55, 0.20, 0.05, 1),
+        'HOLIDAY_BG':     (1.00, 0.95, 0.75, 1),
+        'HOLIDAY_FG':     (0.55, 0.30, 0.00, 1),
+        'WORKDAY_BG':     (1.00, 0.98, 0.94, 1),
+        'WORKDAY_FG':     (0.20, 0.10, 0.05, 1),
+        'HEADER_BG':      (0.96, 0.88, 0.80, 1),
+        'HEADER_FG':      (0.35, 0.15, 0.05, 1),
+        'DEPT_BAR_BG':    (0.55, 0.30, 0.15, 1),
+        'DEPT_BAR_FG':    (1.00, 1.00, 1.00, 1),
+        'VHEADER_BG':     (0.96, 0.88, 0.80, 1),
+        'VHEADER_FG':     (0.25, 0.10, 0.05, 1),
+        'HEADER_DIVIDER': (0.30, 0.15, 0.05, 1),
+        'SPINNER_BG':     (0.85, 0.45, 0.15, 1), # <--- Яркий, тёплый оранжевый
+        'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
+        'TOPBAR_BG':      (0.25, 0.15, 0.10, 1),
+        'WINDOW_BG':      (0.18, 0.10, 0.08, 1),
+        'TABLE_BG':       (0.18, 0.10, 0.08, 1),
+        'EXIT_BG':        (0.70, 0.30, 0.10, 1),  # <--- Яркий, тёплый оранжевый
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
+        'SELECTED_ROW_BG': (0.22, 0.28, 0.38, 1), # Тёмно-синеватый
+    },
+    'light': {
+        'WEEKEND_BG':     (0.95, 0.85, 0.85, 1),
+        'WEEKEND_FG':     (0.60, 0.10, 0.10, 1),
+        'HOLIDAY_BG':     (0.95, 0.95, 0.75, 1),
+        'HOLIDAY_FG':     (0.50, 0.40, 0.00, 1),
+        'WORKDAY_BG':     (1.00, 1.00, 1.00, 1),
+        'WORKDAY_FG':     (0.10, 0.10, 0.10, 1),
+        'HEADER_BG':      (0.85, 0.85, 0.85, 1),
+        'HEADER_FG':      (0.10, 0.10, 0.10, 1),
+        'DEPT_BAR_BG':    (0.30, 0.40, 0.60, 1),
+        'DEPT_BAR_FG':    (1.00, 1.00, 1.00, 1),
+        'VHEADER_BG':     (0.85, 0.85, 0.85, 1),
+        'VHEADER_FG':     (0.10, 0.10, 0.10, 1),
+        'HEADER_DIVIDER': (0.50, 0.50, 0.50, 1),
+        'SPINNER_BG':     (0.40, 0.50, 0.70, 1),
+        'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
+        'TOPBAR_BG':      (0.35, 0.35, 0.35, 1),
+        'WINDOW_BG':      (0.92, 0.92, 0.92, 1),
+        'TABLE_BG':       (0.92, 0.92, 0.92, 1),
+        'EXIT_BG':        (0.45, 0.55, 0.70, 1),
+        'TABLE_FG':       (0.10, 0.10, 0.10, 1),
+        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
+        'SELECTED_ROW_BG': (0.22, 0.28, 0.38, 1), # Тёмно-синеватый
+    },
+}
+
+THEME_LABELS = {
+    'standard': 'Стандартная',
+    'blue':     'Синяя',
+    'green':    'Зелёная',
+    'warm':     'Тёплая',
+    'light':    'Светлая',
+}
+
+CURRENT_THEME = 'standard'
 
 # --- Настройка Kivy ДО импорта kivy.uix.* --------------------------------
 os.environ.setdefault('KIVY_NO_ARGS', '1')
@@ -17,6 +154,13 @@ Config.set('input', 'mouse', 'mouse,disable_multitouch')
 Config.set('graphics', 'dpi', '96')
 Config.set('graphics', 'multisamples', '0')
 Config.set('graphics', 'window_state', 'maximized')
+
+# ДОБАВИТЬ ВОТ ЭТИ СТРОКИ:
+Config.set('graphics', 'width', '1280')
+Config.set('graphics', 'height', '800')
+Config.set('graphics', 'minimum_width', '1024')
+Config.set('graphics', 'minimum_height', '700')
+
 Config.set('kivy', 'keyboard_mode', 'system')
 Config.set('kivy', 'scroll_timeout', '250')
 Config.set('kivy', 'scroll_distance', '20')
@@ -63,24 +207,57 @@ except Exception as e:
 # ПУТИ
 # =========================================================================
 def _data_dir():
-    """Папка для tabel_data.json — рядом с .exe (frozen) или с .py (скрипт)."""
+    """Папка для tabel_data.json, если работаем локально."""
     if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
+        exe_dir = os.path.dirname(sys.executable)
+        try:
+            test_file = os.path.join(exe_dir, ".write_test")
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+            return exe_dir
+        except (PermissionError, OSError):
+            docs = os.path.join(os.path.expanduser('~'), 'Documents', 'TabelApp')
+            os.makedirs(docs, exist_ok=True)
+            return docs
     return os.path.dirname(os.path.abspath(__file__))
 
-
 def _assets_dir():
-    """Папка с ресурсами: временная у PyInstaller, обычная у скрипта."""
     meipass = getattr(sys, '_MEIPASS', None)
     if meipass:
         return meipass
     return os.path.dirname(os.path.abspath(__file__))
 
-
 BASE_DIR = _data_dir()
-DATA_FILE = os.path.join(BASE_DIR, "tabel_data.json")
 
-# Иконку ищем сначала внутри ресурсов PyInstaller, потом рядом с программой.
+# Ищем LOCAL_FILE для чтения настроек сети
+def _get_local_dir():
+    if platform.system() == 'Windows':
+        base = os.environ.get('APPDATA') or os.path.expanduser('~')
+    else:
+        base = (os.environ.get('XDG_CONFIG_HOME') or os.path.expanduser('~/.config'))
+    d = os.path.join(base, 'TabelApp')
+    os.makedirs(d, exist_ok=True)
+    return d
+
+LOCAL_DIR = _get_local_dir()
+LOCAL_FILE = os.path.join(LOCAL_DIR, 'local.json')
+
+# Определяем DATA_FILE (сетевой или локальный)
+NETWORK_DATA_FILE = ""
+try:
+    if os.path.exists(LOCAL_FILE):
+        with open(LOCAL_FILE, 'r', encoding='utf-8') as f:
+            _local_data = _json.load(f) # _json импортирован выше в config.py
+            NETWORK_DATA_FILE = _local_data.get('network_data_path', '')
+except Exception:
+    pass
+
+if NETWORK_DATA_FILE:
+    DATA_FILE = NETWORK_DATA_FILE
+else:
+    DATA_FILE = os.path.join(BASE_DIR, "tabel_data.json")
+
 _icon_candidates = [
     os.path.join(_assets_dir(), "ico", "tabel.ico"),
     os.path.join(BASE_DIR, "ico", "tabel.ico"),
@@ -89,7 +266,7 @@ ICON_PATH = next(
     (p for p in _icon_candidates if os.path.isfile(p)),
     _icon_candidates[0],
 )
-ICON_EMOJI = "[T]"      # ASCII-маркер в заголовке, если нет ico/tabel.ico
+ICON_EMOJI = "[T]"
 
 # =========================================================================
 # ДАННЫЕ ПО УМОЛЧАНИЮ
@@ -295,145 +472,6 @@ def _local_dir():
 
 LOCAL_DIR = _local_dir()
 LOCAL_FILE = os.path.join(LOCAL_DIR, 'local.json')
-
-# =========================================================================
-# ТЕМЫ ОФОРМЛЕНИЯ
-# =========================================================================
-import json as _json
-
-_THEME_COLORS = {
-    'standard': {
-        'WEEKEND_BG':     (1.00, 0.82, 0.82, 1),
-        'WEEKEND_FG':     (0.55, 0.05, 0.05, 1),
-        'HOLIDAY_BG':     (1.00, 0.94, 0.70, 1),
-        'HOLIDAY_FG':     (0.55, 0.35, 0.00, 1),
-        'WORKDAY_BG':     (1.00, 1.00, 1.00, 1),
-        'WORKDAY_FG':     (0.05, 0.05, 0.05, 1),
-        'HEADER_BG':      (0.88, 0.88, 0.88, 1),
-        'HEADER_FG':      (0.05, 0.05, 0.05, 1),
-        'DEPT_BAR_BG':    (0.20, 0.30, 0.55, 1),
-        'DEPT_BAR_FG':    (1.00, 1.00, 1.00, 1),
-        'VHEADER_BG':     (0.85, 0.88, 0.92, 1),
-        'VHEADER_FG':     (0.05, 0.05, 0.05, 1),
-        'HEADER_DIVIDER': (0.00, 0.00, 0.00, 1),
-        'SPINNER_BG':     (0.20, 0.30, 0.55, 1),
-        'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
-        'TOPBAR_BG':      (0.11, 0.12, 0.15, 1),
-        'WINDOW_BG':      (0.15, 0.15, 0.15, 1),
-        'TABLE_BG':       (0.15, 0.15, 0.15, 1),
-        'EXIT_BG':        (0.20, 0.30, 0.55, 1),
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
-        'SELECTED_ROW_BG': (0.22, 0.28, 0.38, 1), # Тёмно-синеватый
-    },
-    'blue': {
-        'WEEKEND_BG':     (0.82, 0.88, 1.00, 1),
-        'WEEKEND_FG':     (0.10, 0.20, 0.60, 1),
-        'HOLIDAY_BG':     (0.82, 0.92, 1.00, 1),
-        'HOLIDAY_FG':     (0.10, 0.30, 0.60, 1),
-        'WORKDAY_BG':     (0.96, 0.98, 1.00, 1),
-        'WORKDAY_FG':     (0.05, 0.10, 0.25, 1),
-        'HEADER_BG':      (0.78, 0.85, 0.96, 1),
-        'HEADER_FG':      (0.05, 0.15, 0.40, 1),
-        'DEPT_BAR_BG':    (0.10, 0.25, 0.60, 1),
-        'DEPT_BAR_FG':    (1.00, 1.00, 1.00, 1),
-        'VHEADER_BG':     (0.78, 0.85, 0.96, 1),
-        'VHEADER_FG':     (0.05, 0.10, 0.30, 1),
-        'HEADER_DIVIDER': (0.10, 0.20, 0.40, 1),
-        'SPINNER_BG':     (0.25, 0.55, 0.95, 1), # <--- Яркий, контрастный синий
-        'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
-        'TOPBAR_BG':      (0.10, 0.15, 0.25, 1),
-        'WINDOW_BG':      (0.08, 0.12, 0.20, 1),
-        'TABLE_BG':       (0.08, 0.12, 0.20, 1),
-        'EXIT_BG':        (0.20, 0.45, 0.80, 1),  # <--- Яркий, контрастный синий
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
-        'SELECTED_ROW_BG': (0.22, 0.28, 0.38, 1), # Тёмно-синеватый
-    },
-    'green': {
-        'WEEKEND_BG':     (0.85, 1.00, 0.88, 1),
-        'WEEKEND_FG':     (0.10, 0.45, 0.15, 1),
-        'HOLIDAY_BG':     (0.92, 1.00, 0.85, 1),
-        'HOLIDAY_FG':     (0.25, 0.50, 0.10, 1),
-        'WORKDAY_BG':     (0.96, 1.00, 0.96, 1),
-        'WORKDAY_FG':     (0.05, 0.20, 0.10, 1),
-        'HEADER_BG':      (0.82, 0.94, 0.85, 1),
-        'HEADER_FG':      (0.05, 0.30, 0.15, 1),
-        'DEPT_BAR_BG':    (0.15, 0.45, 0.25, 1),
-        'DEPT_BAR_FG':    (1.00, 1.00, 1.00, 1),
-        'VHEADER_BG':     (0.82, 0.94, 0.85, 1),
-        'VHEADER_FG':     (0.05, 0.25, 0.10, 1),
-        'HEADER_DIVIDER': (0.10, 0.30, 0.15, 1),
-        'SPINNER_BG':     (0.20, 0.65, 0.35, 1), # <--- Яркий, сочный зелёный
-        'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
-        'TOPBAR_BG':      (0.10, 0.20, 0.10, 1),
-        'WINDOW_BG':      (0.08, 0.15, 0.08, 1),
-        'TABLE_BG':       (0.08, 0.15, 0.08, 1),
-        'EXIT_BG':        (0.15, 0.55, 0.25, 1),  # <--- Яркий, сочный зелёный
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
-        'SELECTED_ROW_BG': (0.22, 0.28, 0.38, 1), # Тёмно-синеватый        
-    },
-    'warm': {
-        'WEEKEND_BG':     (1.00, 0.88, 0.80, 1),
-        'WEEKEND_FG':     (0.55, 0.20, 0.05, 1),
-        'HOLIDAY_BG':     (1.00, 0.95, 0.75, 1),
-        'HOLIDAY_FG':     (0.55, 0.30, 0.00, 1),
-        'WORKDAY_BG':     (1.00, 0.98, 0.94, 1),
-        'WORKDAY_FG':     (0.20, 0.10, 0.05, 1),
-        'HEADER_BG':      (0.96, 0.88, 0.80, 1),
-        'HEADER_FG':      (0.35, 0.15, 0.05, 1),
-        'DEPT_BAR_BG':    (0.55, 0.30, 0.15, 1),
-        'DEPT_BAR_FG':    (1.00, 1.00, 1.00, 1),
-        'VHEADER_BG':     (0.96, 0.88, 0.80, 1),
-        'VHEADER_FG':     (0.25, 0.10, 0.05, 1),
-        'HEADER_DIVIDER': (0.30, 0.15, 0.05, 1),
-        'SPINNER_BG':     (0.85, 0.45, 0.15, 1), # <--- Яркий, тёплый оранжевый
-        'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
-        'TOPBAR_BG':      (0.25, 0.15, 0.10, 1),
-        'WINDOW_BG':      (0.18, 0.10, 0.08, 1),
-        'TABLE_BG':       (0.18, 0.10, 0.08, 1),
-        'EXIT_BG':        (0.70, 0.30, 0.10, 1),  # <--- Яркий, тёплый оранжевый
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
-        'SELECTED_ROW_BG': (0.22, 0.28, 0.38, 1), # Тёмно-синеватый
-    },
-    'light': {
-        'WEEKEND_BG':     (0.95, 0.85, 0.85, 1),
-        'WEEKEND_FG':     (0.60, 0.10, 0.10, 1),
-        'HOLIDAY_BG':     (0.95, 0.95, 0.75, 1),
-        'HOLIDAY_FG':     (0.50, 0.40, 0.00, 1),
-        'WORKDAY_BG':     (1.00, 1.00, 1.00, 1),
-        'WORKDAY_FG':     (0.10, 0.10, 0.10, 1),
-        'HEADER_BG':      (0.85, 0.85, 0.85, 1),
-        'HEADER_FG':      (0.10, 0.10, 0.10, 1),
-        'DEPT_BAR_BG':    (0.30, 0.40, 0.60, 1),
-        'DEPT_BAR_FG':    (1.00, 1.00, 1.00, 1),
-        'VHEADER_BG':     (0.85, 0.85, 0.85, 1),
-        'VHEADER_FG':     (0.10, 0.10, 0.10, 1),
-        'HEADER_DIVIDER': (0.50, 0.50, 0.50, 1),
-        'SPINNER_BG':     (0.40, 0.50, 0.70, 1),
-        'SPINNER_FG':     (1.00, 1.00, 1.00, 1),
-        'TOPBAR_BG':      (0.35, 0.35, 0.35, 1),
-        'WINDOW_BG':      (0.92, 0.92, 0.92, 1),
-        'TABLE_BG':       (0.92, 0.92, 0.92, 1),
-        'EXIT_BG':        (0.45, 0.55, 0.70, 1),
-        'TABLE_FG':       (0.10, 0.10, 0.10, 1),
-        'TABLE_FG':       (0.95, 0.95, 0.95, 1),
-        'SELECTED_ROW_BG': (0.22, 0.28, 0.38, 1), # Тёмно-синеватый
-    },
-}
-
-THEME_LABELS = {
-    'standard': 'Стандартная',
-    'blue':     'Синяя',
-    'green':    'Зелёная',
-    'warm':     'Тёплая',
-    'light':    'Светлая',
-}
-
-CURRENT_THEME = 'standard'
-
 
 def apply_theme(name):
     """Подменяет переменные цветов в модуле config значениями из палитры."""

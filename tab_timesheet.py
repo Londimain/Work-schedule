@@ -30,7 +30,8 @@ from data_utils import (save_data, classify_day, analyze_row,
                         set_local_results_hidden, get_local_results_hidden)
 from data_storage import (get_visible_right_columns,
                           get_local_visible_columns,
-                          set_local_visible_columns)
+                          set_local_visible_columns,
+                          save_cells)
 from ui_helpers import (add_bottom_border, add_top_border,
                         add_left_border, add_right_border,
                         vsep, sync_vertical, measure_text_width,
@@ -83,6 +84,12 @@ class TimesheetTab(BoxLayout):
         self._days_in_month = 0
         self._sel_anchor = None
         self._sel_current = None
+        self._dirty_cells = set()
+        self._is_syncing = False
+        
+        # --- ДЛЯ АВТООБНОВЛЕНИЯ ОКНА ВРЕМЕННЫХ СОТРУДНИКОВ ---
+        self.active_extra_popup = None
+        self.active_extra_rebuild = None
 
         # --- ПЕРЕМЕННЫЕ ДЛЯ УПРАВЛЕНИЯ ВИДИМОСТЬЮ ИТОГОВ ---
         self._results_hidden = get_local_results_hidden()
@@ -106,6 +113,10 @@ class TimesheetTab(BoxLayout):
         # ---------------------------------------------------
 
         self._shift_held = False
+        self._min_right_widths = []       # <--- ДОБАВИТЬ
+        self._built_names = {}            # <--- ДОБАВИТЬ
+        self._built_positions = {}        # <--- ДОБАВИТЬ
+        
         from kivy.core.window import Window
         Window.bind(on_keyboard=self._on_window_keyboard,
                     on_key_down=self._on_win_key_down,
@@ -417,20 +428,56 @@ class TimesheetTab(BoxLayout):
 
         num_cols = len(self._right_cols)
         
-        # Начинаем с минимально возможной ширины (26dp или из конфига)
-        new_widths = [max(dp(26), col[2]) for col in self._right_cols]
+        # 1. Начальная минимальная ширина колонки
+        new_widths = [max(dp(36), col[2]) for col in self._right_cols]
 
-        # Проверяем текст во всех ячейках, чтобы найти самую широкую
+        # 2. Учитываем вертикальные заголовки
+        for i, (label, key_, w) in enumerate(self._right_cols):
+            vert_h = measure_text_height(label, 1000, font_size=9)
+            req_w = vert_h + dp(16)
+            if req_w > new_widths[i]:
+                new_widths[i] = req_w
+
+        # 3. Учитываем содержимое ячеек
         for i in range(num_cols):
             cells = (getattr(self, '_right_col_cells', [[]])[i]
                      if hasattr(self, '_right_col_cells') else [])
             for cell in cells:
                 txt = cell.input.text.strip()
                 if txt:
-                    # + dp(4) — минимальный отступ по бокам для текста
-                    req_w = measure_text_width(txt, font_size=14) + dp(4)
+                    req_w = measure_text_width(txt, font_size=14) + dp(8)
                     if req_w > new_widths[i]:
                         new_widths[i] = req_w
+
+        # 4. ЗАЩИТА ОТ СУЖЕНИЯ (уберет мерцание)
+        if not hasattr(self, '_min_right_widths') or len(self._min_right_widths) != num_cols:
+            self._min_right_widths = [0] * num_cols
+
+        for i in range(num_cols):
+            if new_widths[i] > self._min_right_widths[i]:
+                self._min_right_widths[i] = new_widths[i]
+            new_widths[i] = self._min_right_widths[i]
+
+        # 5. Учитываем заголовки групп
+        col_index = {col[1]: i for i, col in enumerate(self._right_cols)}
+        group_widths = []
+        
+        for gname, gkeys in RIGHT_COLUMN_GROUPS:
+            gvis = [k for k in gkeys if k in col_index]
+            if not gvis:
+                continue
+            
+            gw = sum(new_widths[col_index[k]] for k in gvis)
+            min_gw = measure_text_width(gname, font_size=11) + dp(24)
+            
+            if gw < min_gw:
+                diff = min_gw - gw
+                per_col = diff / len(gvis)
+                for k in gvis:
+                    new_widths[col_index[k]] += per_col
+                gw = min_gw
+                
+            group_widths.append(gw)
 
         total_w = sum(new_widths)
         if abs(self.RIGHT_W - total_w) < 1:
@@ -438,33 +485,19 @@ class TimesheetTab(BoxLayout):
 
         self.RIGHT_W = total_w
         
-        # Применяем новые размеры к заголовкам
+        # 6. Применяем новые размеры к заголовкам колонок
         if hasattr(self, '_right_headers'):
             for i, hdr in enumerate(self._right_headers):
                 last = (i == num_cols - 1)
                 hdr.width = new_widths[i] if last else new_widths[i] - 1
 
-        # Применяем новые размеры к верхним группам ("Дни явок" и т.д.)
-        if hasattr(self, '_right_top_groups') and self._right_top_groups:
-            col_index = {col[1]: i for i, col in enumerate(self._right_cols)}
-            group_widths = []
-            for _gname, gkeys in RIGHT_COLUMN_GROUPS:
-                gvis = [k for k in gkeys if k in col_index]
-                if not gvis:
-                    continue
-                gw = sum(new_widths[col_index[k]] for k in gvis)
-                group_widths.append(gw)
-            for i, gw in enumerate(group_widths):
-                is_last = (i == len(group_widths) - 1)
-                self._right_top_groups[i].width = gw if is_last else gw - 1
-
-        # Применяем новые размеры к самим ячейкам
+        # 7. Применяем новые размеры к самим ячейкам
         if hasattr(self, '_right_col_cells'):
             for i in range(num_cols):
                 for cell in self._right_col_cells[i]:
                     cell.width = new_widths[i]
 
-        # Обновляем ширину строк и сетки
+        # 8. Обновляем ширину строк и сетки
         if hasattr(self, '_right_rows'):
             for r in self._right_rows:
                 r.width = self.RIGHT_W
@@ -479,6 +512,12 @@ class TimesheetTab(BoxLayout):
                 self.right_header.width = self.RIGHT_W
             if getattr(self, 'right_top', None):
                 self.right_top.width = self.RIGHT_W
+                
+        # 9. Применяем новые размеры к верхним группам
+        if hasattr(self, '_right_top_groups') and self._right_top_groups:
+            for i, gw in enumerate(group_widths):
+                is_last = (i == len(group_widths) - 1)
+                self._right_top_groups[i].width = gw if is_last else gw - 1
                 
         Clock.schedule_once(lambda dt: self._apply_results_visibility(), 0)
 
@@ -506,8 +545,19 @@ class TimesheetTab(BoxLayout):
         return month_dict
 
     def _show_selection_popup(self, title, items, callback):
+        """items может быть списком ИЛИ функцией-геттером, возвращающей список.
+        Если функция — вызывается при каждой перестройке списка,
+        так что список всегда актуален (подхватывает внешние изменения)."""
+        def _get_items():
+            try:
+                if callable(items):
+                    return list(items() or [])
+                return list(items or [])
+            except Exception:
+                return []
+
         content = BoxLayout(orientation='vertical', spacing=5, padding=5)
-        
+
         search_input = TextInput(
             multiline=False, font_size=dp(14), font_name=FONT_NAME,
             foreground_color=(0.05, 0.05, 0.05, 1),
@@ -518,43 +568,58 @@ class TimesheetTab(BoxLayout):
             hint_text="Введите для поиска..."
         )
         content.add_widget(search_input)
-        
+
         scroll = ScrollView(scroll_type=['bars'], effect_cls=NoOverscrollEffect)
         grid = GridLayout(cols=1, size_hint_y=None, spacing=2)
         grid.bind(minimum_height=grid.setter('height'))
-        
-        popup = Popup(title=title, content=content, size_hint=(0.6, 0.5), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
-        
+
+        popup = Popup(title=title, content=content, size_hint=(0.6, 0.5),
+                      title_color=LABEL_LIGHT, title_font=FONT_NAME,
+                      auto_dismiss=False)
+
         def do_select(val):
             callback(val)
             popup.dismiss()
-            
+
         def rebuild_list(query=''):
             grid.clear_widgets()
             q = query.lower()
-            for it in items:
+            current_items = _get_items()  # <-- актуальный список на каждый вызов
+            for it in current_items:
                 if q in it.lower():
                     btn = Button(
-                        text=it, size_hint_y=None, height=dp(36), 
-                        font_name=FONT_NAME, font_size=dp(14), 
-                        background_normal='', background_color=(0.2, 0.2, 0.25, 1), color=(1,1,1,1),
+                        text=it, size_hint_y=None, height=dp(36),
+                        font_name=FONT_NAME, font_size=dp(14),
+                        background_normal='',
+                        background_color=(0.2, 0.2, 0.25, 1),
+                        color=(1, 1, 1, 1),
                         halign='center', valign='middle',
                         shorten=True, shorten_from='right'
                     )
-                    btn.bind(size=lambda instance, value: setattr(instance, 'text_size', (value[0] - 20, None)))
+                    btn.bind(size=lambda instance, value: setattr(
+                        instance, 'text_size', (value[0] - 20, None)))
                     btn.bind(on_press=lambda *a, x=it: do_select(x))
                     grid.add_widget(btn)
-                    
+
+            if not grid.children:
+                grid.add_widget(Label(
+                    text="Нет элементов",
+                    color=(0.6, 0.6, 0.6, 1),
+                    font_name=FONT_NAME, font_size=dp(14),
+                    size_hint_y=None, height=dp(36)
+                ))
+
         search_input.bind(text=lambda inst, val: rebuild_list(val))
         rebuild_list()
-        
+
         scroll.add_widget(grid)
         content.add_widget(scroll)
-        
-        close_btn = Button(text="Отмена", size_hint_y=None, height=dp(40), font_name=FONT_NAME, color=(1,1,1,1))
+
+        close_btn = Button(text="Отмена", size_hint_y=None, height=dp(40),
+                           font_name=FONT_NAME, color=(1, 1, 1, 1))
         close_btn.bind(on_press=popup.dismiss)
         content.add_widget(close_btn)
-        
+
         popup.open()
 
     def show_manage_extra_popup(self, *args):
@@ -587,28 +652,36 @@ class TimesheetTab(BoxLayout):
             foreground_color=(0.05, 0.05, 0.05, 1), background_color=(1, 1, 1, 1),
             cursor_color=(0.10, 0.30, 0.70, 1), cursor_width=dp(2),
             padding=[dp(8), dp(10), dp(8), dp(10)], size_hint_y=None, height=dp(40),
-            hint_text="Введите любую фамилию", halign='center'
+            hint_text="Введите любую фамилию", halign='left'
         )
         name_btn = Button(text="Выбрать...", size_hint=(None, None), size=(dp(100), dp(40)), font_name=FONT_NAME)
-        name_btn.bind(on_press=lambda *a: self._show_selection_popup("Выбор сотрудника", all_names, lambda val: setattr(name_input, 'text', val)))
+        name_btn.bind(on_press=lambda *a: self._show_selection_popup(
+            "Выбор сотрудника",
+            lambda: sorted(list(set(
+                e['name'] for e in self.app.data.get('employees', [])
+            ))),
+            lambda val: setattr(name_input, 'text', val)))
         
         name_row = BoxLayout(size_hint_y=None, height=dp(40), spacing=5)
         name_row.add_widget(name_input)
         name_row.add_widget(name_btn)
 
-        pos_holder = BoxLayout(size_hint_y=None, height=dp(40))
+        pos_holder = BoxLayout(size_hint_y=None, height=dp(40), padding=(dp(8), 0, 0, 0))
         with pos_holder.canvas.before:
             Color(1, 1, 1, 1)
             _pos_rect = Rectangle(pos=pos_holder.pos, size=pos_holder.size)
         pos_holder.bind(pos=lambda i, v: setattr(_pos_rect, 'pos', v),
                         size=lambda i, v: setattr(_pos_rect, 'size', v))
         
-        pos_input = Label(text="", font_size=dp(15), font_name=FONT_NAME, color=(0.05, 0.05, 0.05, 1), halign='center', valign='middle')
-        pos_input.bind(size=lambda i, v: setattr(i, 'text_size', v))
+        pos_input = Label(text="", font_size=dp(15), font_name=FONT_NAME, color=(0.05, 0.05, 0.05, 1), halign='left', valign='middle')
+        pos_input.bind(size=lambda i, v: setattr(i, 'text_size', (v[0]-dp(8), v[1])))
         pos_holder.add_widget(pos_input)
         
         pos_btn = Button(text="Выбрать...", size_hint=(None, None), size=(dp(100), dp(40)), font_name=FONT_NAME)
-        pos_btn.bind(on_press=lambda *a: self._show_selection_popup("Выбор должности", positions, lambda val: setattr(pos_input, 'text', val)))
+        pos_btn.bind(on_press=lambda *a: self._show_selection_popup(
+            "Выбор должности",
+            lambda: list(self.app.data.get('positions', [])),
+            lambda val: setattr(pos_input, 'text', val)))
         
         pos_row = BoxLayout(size_hint_y=None, height=dp(40), spacing=5)
         pos_row.add_widget(pos_holder)
@@ -681,21 +754,40 @@ class TimesheetTab(BoxLayout):
                 padding=[dp(8), dp(10), dp(8), dp(10)], size_hint_y=None, height=dp(40), halign='left'
             )
             name_btn = Button(text="Выбрать...", size_hint=(None, None), size=(dp(100), dp(40)), font_name=FONT_NAME)
-            name_btn.bind(on_press=lambda *a: self._show_selection_popup("Выбор сотрудника", all_names, lambda val: setattr(name_in, 'text', val)))
+            name_btn.bind(on_press=lambda *a: self._show_selection_popup(
+                "Выбор сотрудника",
+                lambda: sorted(list(set(
+                    e['name'] for e in self.app.data.get('employees', [])
+                ))),
+                lambda val: setattr(name_in, 'text', val)))
             name_row = BoxLayout(size_hint_y=None, height=dp(40), spacing=5)
             name_row.add_widget(name_in)
             name_row.add_widget(name_btn)
 
-            pos_in = TextInput(
-                text=emp_data['position'], multiline=False, font_size=dp(15), font_name=FONT_NAME,
-                foreground_color=(0.05, 0.05, 0.05, 1), background_color=(1, 1, 1, 1),
-                padding=[dp(8), dp(10), dp(8), dp(10)], size_hint_y=None, height=dp(40), halign='left'
+            # --- ЗАМЕНА TextInput НА Label ---
+            pos_holder_edit = BoxLayout(size_hint_y=None, height=dp(40), padding=(dp(8), 0, 0, 0))
+            with pos_holder_edit.canvas.before:
+                Color(1, 1, 1, 1)
+                _pos_rect_edit = Rectangle(pos=pos_holder_edit.pos, size=pos_holder_edit.size)
+            pos_holder_edit.bind(pos=lambda i, v: setattr(_pos_rect_edit, 'pos', v),
+                                 size=lambda i, v: setattr(_pos_rect_edit, 'size', v))
+
+            pos_in = Label(
+                text=emp_data['position'], font_size=dp(15), font_name=FONT_NAME,
+                color=(0.05, 0.05, 0.05, 1), halign='left', valign='middle'
             )
+            pos_in.bind(size=lambda i, v: setattr(i, 'text_size', (v[0]-dp(8), v[1])))
+            pos_holder_edit.add_widget(pos_in)
+
             pos_btn = Button(text="Выбрать...", size_hint=(None, None), size=(dp(100), dp(40)), font_name=FONT_NAME)
-            pos_btn.bind(on_press=lambda *a: self._show_selection_popup("Выбор должности", positions, lambda val: setattr(pos_in, 'text', val)))
+            pos_btn.bind(on_press=lambda *a: self._show_selection_popup(
+                "Выбор должности",
+                lambda: list(self.app.data.get('positions', [])),
+                lambda val: setattr(pos_in, 'text', val)))
             pos_row = BoxLayout(size_hint_y=None, height=dp(40), spacing=5)
-            pos_row.add_widget(pos_in)
+            pos_row.add_widget(pos_holder_edit)
             pos_row.add_widget(pos_btn)
+            # ----------------------------------
 
             btns = BoxLayout(size_hint_y=None, height=dp(44), spacing=10)
             save_btn = Button(text="Сохранить", background_color=(0.3, 0.7, 0.3, 1), color=(1,1,1,1), font_name=FONT_NAME)
@@ -728,7 +820,7 @@ class TimesheetTab(BoxLayout):
                 if new_name and new_pos:
                     emp_data['name'] = new_name
                     emp_data['position'] = new_pos
-                    save_data(self.app.data)
+                    self.app.safe_save(self.app.data)
                     self.load_timesheet()
                     rebuild_list()
                     popup_edit.dismiss()
@@ -737,7 +829,6 @@ class TimesheetTab(BoxLayout):
             cancel_btn.bind(on_press=popup_edit.dismiss)
             
             name_in.bind(on_text_validate=do_save_edit)
-            pos_in.bind(on_text_validate=do_save_edit)
             bind_enter_key(popup_edit, do_save_edit)
             
             popup_edit.open()
@@ -791,7 +882,7 @@ class TimesheetTab(BoxLayout):
                 
                 def do_del(*a, eid=emp['id']):
                     month_dict[dept] = [e for e in extra if e['id'] != eid]
-                    save_data(self.app.data)
+                    self.app.safe_save(self.app.data)
                     self.load_timesheet()
                     rebuild_list()
                     
@@ -837,7 +928,7 @@ class TimesheetTab(BoxLayout):
 
             new_id = f"extra_{key}_{int(datetime.now().timestamp() * 1000)}"
             extra.append({'id': new_id, 'name': name, 'position': pos, 'is_contract': False})
-            save_data(self.app.data)
+            self.app.safe_save(self.app.data)
             self.load_timesheet()
             rebuild_list()
             
@@ -849,7 +940,18 @@ class TimesheetTab(BoxLayout):
         
         name_input.bind(on_text_validate=do_add)
         bind_enter_key(popup, do_add)
-        
+
+        # --- ПРИВЯЗКА ДЛЯ АВТООБНОВЛЕНИЯ ---
+        self.active_extra_popup = popup
+        self.active_extra_rebuild = rebuild_list
+
+        def on_extra_dismiss(*args):
+            self.active_extra_popup = None
+            self.active_extra_rebuild = None
+
+        popup.bind(on_dismiss=on_extra_dismiss)
+        # -----------------------------------
+
         popup.open()
         rebuild_list()
 
@@ -869,7 +971,11 @@ class TimesheetTab(BoxLayout):
             return
         if self._last_key:
             self._save_for_key(self._last_key)
-        self.load_timesheet()
+        
+        # Дебаунс: даем спиннеру закрыться и интерфейсу успокоиться
+        if getattr(self, '_period_change_ev', None):
+            self._period_change_ev.cancel()
+        self._period_change_ev = Clock.schedule_once(lambda dt: self.load_timesheet(), 0.2)
 
     def _on_win_key_down(self, window, key, scancode, codepoint, modifiers):
         if 'shift' in (modifiers or []):
@@ -881,33 +987,111 @@ class TimesheetTab(BoxLayout):
             self._shift_held = False
             NavTextInput.shift_state['held'] = False
 
-    def _save_for_key(self, key):
-        ts = self.app.data['timesheets'].setdefault(key, {})
-        for emp_id, cells in self.day_inputs.items():
-            emp_data = {}
-            for d, cell in enumerate(cells, start=1):
-                txt = cell.input.text.strip()
-                if txt:
-                    emp_data[str(d)] = txt
-            ts[emp_id] = emp_data
-        save_data(self.app.data)
+    def _flush_pending_save(self):
+        """Записать только грязные ячейки в файл под локом с merge."""
+        if not self._dirty_cells:
+            return
+        key = self._last_key
+        if not key:
+            self._dirty_cells.clear()
+            return
+
+        cells_values = {}
+        for emp_id, day_str in self._dirty_cells:
+            try:
+                day_int = int(day_str)
+            except ValueError:
+                continue
+            cells = self.day_inputs.get(emp_id, [])
+            if 1 <= day_int <= len(cells):
+                cells_values[(emp_id, day_str)] = cells[day_int - 1].input.text.strip()
+
+        if cells_values:
+            try:
+                from data_storage import save_cells
+                save_cells(self.app.data, key, cells_values)
+                self._dirty_cells.clear() # Очищаем только при успехе
+            except ConnectionError:
+                # Показываем окно через главное приложение
+                self.app._show_save_error("Отсутствует связь с сетевой базой данных. Изменения не сохранены!")
+                # НЕ очищаем _dirty_cells, чтобы при появлении сети они сохранились
+            except Exception as e:
+                print("Ошибка сохранения ячеек:", e)
+
+    def _apply_external_data(self, new_data):
+        """Обновляет только значения ячеек, не пересоздавая таблицу."""
+        self._is_syncing = True
+        try:
+            key = self._get_key()
+            ts = new_data.get('timesheets', {}).get(key, {})
+
+            for emp_id, cells in self.day_inputs.items():
+                day_values = ts.get(emp_id, {})
+                for d_idx, cell in enumerate(cells, start=1):
+                    # Если пользователь прямо сейчас печатает в этой ячейке — не трогаем
+                    if cell.input.focused and (emp_id, str(d_idx)) in self._dirty_cells:
+                        continue
+
+                    new_val = str(day_values.get(str(d_idx), ''))
+                    if cell.input.text != new_val:
+                        cell.input.text = new_val
+
+            # Пересчёт итогов внутри _is_syncing — чтобы не дёргать авто-подгонку на каждый сотрудник
+            for emp_id in list(self.day_inputs.keys()):
+                self._recalc_totals(emp_id)
+        finally:
+            self._is_syncing = False
+
+        cells_values = {}
+        for emp_id, day_str in self._dirty_cells:
+            try:
+                day_int = int(day_str)
+            except ValueError:
+                continue
+            cells = self.day_inputs.get(emp_id, [])
+            if 1 <= day_int <= len(cells):
+                cells_values[(emp_id, day_str)] = cells[day_int - 1].input.text.strip()
+
+        if cells_values:
+            save_cells(self.app.data, key, cells_values)
+
+        self._dirty_cells.clear()
+
+        # Одна авто-подгонка после синхронизации (а не на каждый пересчёт)
+        if getattr(self, '_auto_fit_right_ev', None):
+            self._auto_fit_right_ev.cancel()
+        self._auto_fit_right_ev = Clock.schedule_once(
+            lambda dt: self._auto_fit_right_columns(), 0.3)
+
+    def _save_for_key(self, key=None):
+        """Совместимость: старый API, используется в паре мест."""
+        self._flush_pending_save()
 
     def _save_all(self, dt=0):
-        self._save_for_key(self._get_key())
+        self._flush_pending_save()
 
     def _schedule_save(self, *a):
         if self._save_event:
             self._save_event.cancel()
         self._save_event = Clock.schedule_once(self._save_all, 0.6)
 
-    def _on_day_change(self, emp_id):
+    def _on_day_change(self, emp_id, day=None):
+        if getattr(self, '_is_syncing', False):
+            return
+        if day is not None:
+            self._dirty_cells.add((emp_id, str(day)))
         self._recalc_totals(emp_id)
         self._schedule_save()
-        
+
         if getattr(self, '_auto_fit_ev', None):
             self._auto_fit_ev.cancel()
         self._auto_fit_ev = Clock.schedule_once(lambda dt: self._auto_fit_day_columns(), 0.5)
 
+    def update_open_popups(self):
+        """Обновляет открытое окно временных сотрудников, если оно есть."""
+        if getattr(self, 'active_extra_popup', None) and getattr(self, 'active_extra_rebuild', None):
+            Clock.schedule_once(lambda dt: self.active_extra_rebuild(), 0)
+            
     def _employees_for_ts(self):
         key = self._get_key()
         dept = self._get_active_dept()
@@ -1593,6 +1777,72 @@ class TimesheetTab(BoxLayout):
         except Exception:
             pass
 
+    def refresh_if_needed(self):
+        """Вызывается при переключении на вкладку. Перестраивает только при изменениях."""
+        if getattr(self, '_last_key', None) is None:
+            self.load_timesheet()
+            return
+
+        # Проверяем, совпадает ли месяц/год
+        if self._last_key != self._get_key():
+            self.load_timesheet()
+            return
+
+        employees = self._employees_for_ts()
+        current_ids = [emp['id'] for emp in employees]
+        
+        # Если изменился состав или порядок сотрудников -> нужна полная перестройка
+        if current_ids != self._employees_order:
+            self.load_timesheet()
+            return
+            
+        # Если изменились только имена или должности -> обновляем текст БЕЗ перестройки!
+        changed = False
+        for emp in employees:
+            if self._built_names.get(emp['id']) != emp.get('name', ''):
+                changed = True
+                break
+            if self._built_positions.get(emp['id']) != emp.get('position', ''):
+                changed = True
+                break
+                
+        if changed:
+            self._update_texts_only(employees)
+        else:
+            # Если структура та же, просто обновляем значения ячеек (без мерцания)
+            self._apply_external_data(self.app.data)
+
+    def _update_texts_only(self, employees):
+        """Обновляет только ФИО и Должность, не перестраивая таблицу (убирает мерцание)."""
+        try:
+            left_sv = None
+            # Ищем левый ScrollView (он имеет ширину LEFT_W)
+            if getattr(self, '_current_body', None):
+                for child in self._current_body.children:
+                    if isinstance(child, SmartScrollView) and child.width == self.LEFT_W:
+                        left_sv = child
+                        break
+            
+            if left_sv and left_sv.children:
+                left_grid = left_sv.children[0]
+                for i, emp in enumerate(employees):
+                    if i < len(left_grid.children):
+                        r = left_grid.children[-(i+1)]
+                        # r.children = [pos_lbl, name_lbl, num_lbl] в обратном порядке
+                        pos_lbl = r.children[0]
+                        name_lbl = r.children[1]
+                        
+                        name_lbl.text = emp.get('name', '')
+                        pos_lbl.text = emp.get('position', '')
+                        
+                        self._built_names[emp['id']] = emp.get('name', '')
+                        self._built_positions[emp['id']] = emp.get('position', '')
+            
+            self._apply_external_data(self.app.data)
+        except Exception as e:
+            print("Ошибка при обновлении текста:", e)
+            self.load_timesheet()
+            
     def confirm_clear(self):
         content = BoxLayout(orientation='vertical', spacing=10, padding=10)
         content.add_widget(Label(
@@ -1617,7 +1867,7 @@ class TimesheetTab(BoxLayout):
         def do_clear(*a):
             key = self._get_key()
             self.app.data['timesheets'][key] = {}
-            save_data(self.app.data)
+            self.app.safe_save(self.app.data)
             popup.dismiss()
             self.load_timesheet()
 
@@ -1686,7 +1936,7 @@ class TimesheetTab(BoxLayout):
                     emp_over.pop(col_key, None)
                 else:
                     emp_over[col_key] = txt
-        save_data(self.app.data)
+        self.app.safe_save(self.app.data)
         for emp_id in list(self.total_labels.keys()):
             self._recalc_totals(emp_id)
 
@@ -1714,7 +1964,7 @@ class TimesheetTab(BoxLayout):
         def do_reset(*a):
             key = self._get_key()
             self.app.data.setdefault('result_overrides', {})[key] = {}
-            save_data(self.app.data)
+            self.app.safe_save(self.app.data)
             popup.dismiss()
             self.load_timesheet()
 
@@ -1724,14 +1974,21 @@ class TimesheetTab(BoxLayout):
         popup.open()
 
     def load_timesheet(self):
+        if getattr(self, '_loading', False):
+            return
         self._loading = True
         try:
             # --- ПЕРЕСЧЁТ ВИДИМЫХ КОЛОНОК ---
             self._right_cols = get_visible_right_columns()
             if not self._right_cols:
                 self._right_cols = list(RIGHT_COLUMNS)
+                
+            # Сбрасываем ширины, чтобы они пересчитались под новый месяц
+            self._min_right_widths = [0] * len(self._right_cols)
 
-            self.main_container.clear_widgets()
+            # Список для новых виджетов (строим в памяти)
+            new_widgets = []
+
             self.day_inputs.clear()
             self.total_labels.clear()
             self._all_day_headers = []
@@ -1744,8 +2001,7 @@ class TimesheetTab(BoxLayout):
             self._days_in_month = days_in_month
             ts = self.app.data['timesheets'].setdefault(key, {})
 
-            day_types = [classify_day(y, m, d)
-                         for d in range(1, days_in_month + 1)]
+            day_types = [classify_day(y, m, d) for d in range(1, days_in_month + 1)]
             self._day_types = day_types
 
             night_flags = self.app.data.get('night_flags', {})
@@ -1790,9 +2046,86 @@ class TimesheetTab(BoxLayout):
                 row_heights.append(rh)
 
             LEFT_W  = W_NUM + W_NAME + W_POS
-            RIGHT_W = sum(w for _, _, w in self._right_cols)
-            DAYS_W  = days_in_month * W_DAY
-            
+
+            # ============ ПРАВЫЕ КОЛОНКИ ============
+            right_widths = [max(dp(36), col[2]) for col in self._right_cols]
+
+            for i, (label, key_, w) in enumerate(self._right_cols):
+                vert_h = measure_text_height(label, 1000, font_size=9)
+                req_w = vert_h + dp(16)
+                if req_w > right_widths[i]:
+                    right_widths[i] = req_w
+
+            norm_hours_val = self._get_norm_hours()
+            overrides_all = self.app.data.get('result_overrides', {}).get(key, {})
+
+            for emp in employees:
+                emp_id = emp['id']
+                day_data = ts.get(emp_id, {})
+                values = [day_data.get(str(d), '') for d in range(1, days_in_month + 1)]
+                pos_name = emp.get('position', '')
+                night_on = bool(night_flags.get(pos_name, False))
+                overtime_on = bool(overtime_flags.get(pos_name, False))
+                no_weekends_on = bool(no_weekends_flags.get(pos_name, False))
+
+                res = analyze_row(values, day_types, night_on, no_weekends_on)
+                if overtime_on:
+                    apply_overtime(res, norm_hours_val)
+                else:
+                    res['сверхурочные'] = 0.0
+
+                emp_over = overrides_all.get(emp_id, {})
+                for i, (_, key_, _) in enumerate(self._right_cols):
+                    val = emp_over.get(key_, res.get(key_, 0))
+                    if key_ in ('часы', 'сверхурочные', 'ночные', 'праздничные', 'выходные_часы'):
+                        val_str = fmt_hours(val)
+                    else:
+                        val_str = str(val)
+                    if val_str and val_str != '0':
+                        req_w = measure_text_width(val_str, font_size=14) + dp(8)
+                        if req_w > right_widths[i]:
+                            right_widths[i] = req_w
+
+            col_index_map = {col[1]: i for i, col in enumerate(self._right_cols)}
+            for gname, gkeys in RIGHT_COLUMN_GROUPS:
+                gvis = [k for k in gkeys if k in col_index_map]
+                if not gvis:
+                    continue
+                gw = sum(right_widths[col_index_map[k]] for k in gvis)
+                min_gw = measure_text_width(gname, font_size=11) + dp(24)
+                if gw < min_gw:
+                    diff = min_gw - gw
+                    per_col = diff / len(gvis)
+                    for k in gvis:
+                        right_widths[col_index_map[k]] += per_col
+
+            RIGHT_W = sum(right_widths)
+            # ============ КОНЕЦ ПРАВЫХ КОЛОНОК ============
+
+            # ============ ДНИ МЕСЯЦА ============
+            results_hidden = getattr(self, '_results_hidden', False)
+            right_w_for_days = 0 if results_hidden else RIGHT_W
+
+            if self.width > 0:
+                avail_w_est = max(0, self.width - dp(20) - LEFT_W - right_w_for_days)
+                base_w = max(dp(36), avail_w_est / days_in_month) if avail_w_est > 0 else dp(36)
+            else:
+                base_w = dp(36)
+
+            day_widths = [base_w] * days_in_month
+            for emp in employees:
+                emp_id = emp['id']
+                day_data = ts.get(emp_id, {})
+                for d in range(1, days_in_month + 1):
+                    val = str(day_data.get(str(d), '')).strip()
+                    if val:
+                        req_w = measure_text_width(val, font_size=14) + dp(6)
+                        if req_w > day_widths[d - 1]:
+                            day_widths[d - 1] = req_w
+
+            DAYS_W = sum(day_widths)
+            # ============ КОНЕЦ ДНЕЙ ============
+
             self.LEFT_W = LEFT_W
             self.RIGHT_W = RIGHT_W
 
@@ -1852,7 +2185,7 @@ class TimesheetTab(BoxLayout):
                 gvis = [k for k in gkeys if k in visible_keys]
                 if not gvis:
                     continue
-                gw = sum(c[2] for c in self._right_cols if c[1] in gvis)
+                gw = sum(right_widths[col_index_map[k]] for k in gvis)
                 group_list.append((gname, gw))
 
             for i, (gname, gw) in enumerate(group_list):
@@ -1870,7 +2203,7 @@ class TimesheetTab(BoxLayout):
             add_bottom_border(c_holder, color=BORDER_BLACK, thickness=LINE_T)
             add_bottom_border(right_top, color=BORDER_BLACK, thickness=LINE_T)
 
-            self.main_container.add_widget(header_strip)
+            new_widgets.append(header_strip)
 
             # ============================================================
             # НИЖНЯЯ ЧАСТЬ ШАПКИ (фиксированная)
@@ -1901,7 +2234,7 @@ class TimesheetTab(BoxLayout):
                                          weekday_idx=wd_idx,
                                          show_right=True,
                                          size_hint=(None, None),
-                                         size=(W_DAY, HEAD_BOT_H))
+                                         size=(day_widths[i], HEAD_BOT_H))
                 self._all_day_headers.append(day_hdr)
                 dh.add_widget(day_hdr)
             add_bottom_border(dh, color=BORDER_BLACK, thickness=LINE_T)
@@ -1927,7 +2260,7 @@ class TimesheetTab(BoxLayout):
                 last = (i == n - 1)
                 vl = VerticalLabel(text=label, font_size=9, pad_top=6,
                                     size_hint=(None, None),
-                                    size=(w if last else w - LINE_T, HEAD_BOT_H))
+                                    size=(right_widths[i] if last else right_widths[i] - LINE_T, HEAD_BOT_H))
                 if i == 0:
                     add_left_border(vl, color=BORDER_BLACK, thickness=LINE_T)
                 rh_box.add_widget(vl)
@@ -1939,7 +2272,7 @@ class TimesheetTab(BoxLayout):
             header_bottom.add_widget(lh)
             header_bottom.add_widget(days_head_container)
             header_bottom.add_widget(rh_box)
-            self.main_container.add_widget(header_bottom)
+            new_widgets.append(header_bottom)
 
             # ============================================================
             # СОДЕРЖИМОЕ (прокручиваемая часть)
@@ -2020,9 +2353,9 @@ class TimesheetTab(BoxLayout):
                                     on_cell_touch_down=self._on_cell_touch_down,
                                     extra_key_callback=self._on_extra_key,
                                     size_hint=(None, None),
-                                    size=(W_DAY, rh))
-                    cell.input.bind(text=lambda inst, val, eid=emp_id:
-                                    self._on_day_change(eid))
+                                    size=(day_widths[d - 1], rh))
+                    cell.input.bind(text=lambda inst, val, eid=emp_id, d=d:
+                                    self._on_day_change(eid, d))
                     r.add_widget(cell)
                     cells.append(cell)
                 add_bottom_border(r)
@@ -2081,7 +2414,7 @@ class TimesheetTab(BoxLayout):
                         show_left=(i == 0),
                         show_right=(i < last_i),
                         border_color=BORDER_BLACK, border_th=LINE_T,
-                        size_hint=(None, None), size=(w, rh),
+                        size_hint=(None, None), size=(right_widths[i], rh),
                         on_key_callback=cb,
                         on_cell_touch_down=self._on_cell_touch_down,
                         extra_key_callback=self._on_extra_key,
@@ -2105,7 +2438,7 @@ class TimesheetTab(BoxLayout):
             right_sv.add_widget(right_grid)
             body.add_widget(right_sv)
 
-            self.main_container.add_widget(body)
+            new_widgets.append(body)
             sync_vertical([left_sv, days_sv, right_sv])
 
             for emp_id in list(self.day_inputs.keys()):
@@ -2119,11 +2452,46 @@ class TimesheetTab(BoxLayout):
             self._current_header_bottom = header_bottom
             self._current_content_h = sum(row_heights)
             
-            Clock.schedule_once(self._resize_body, 0)
+            self._built_names = {emp['id']: emp.get('name', '') for emp in employees}
+            self._built_positions = {emp['id']: emp.get('position', '') for emp in employees}
+
+            # Обновляем высоту контейнера ДО очистки, чтобы избежать скачка интерфейса
+            main_h = 0
+            try:
+                avail_h = self.height - self.top_bar.height - self.hint_wrap.height - dp(10)
+                avail_h -= header_strip.height + header_bottom.height
+                target_h = min(avail_h, self._current_content_h)
+                if target_h < dp(50):
+                    target_h = dp(50)
+                
+                body.height = target_h
+                main_h = header_strip.height + header_bottom.height + target_h
+            except Exception:
+                pass
+
+            # === СКРЫТАЯ ЗАМЕНА (Убирает мерцание и скачки) ===
+            self.main_container.opacity = 0
             
-            self._apply_results_visibility()
-            Clock.schedule_once(lambda dt: self._auto_fit_day_columns(), 0.1)
-            Clock.schedule_once(lambda dt: self._auto_fit_right_columns(), 0.1)
+            if main_h > 0:
+                self.main_container.height = main_h
+                
+            self.main_container.clear_widgets()
+            for w in new_widgets:
+                self.main_container.add_widget(w)
+                
+            if getattr(self, '_finalize_ev', None):
+                self._finalize_ev.cancel()
+
+            def _finalize(dt):
+                try:
+                    self._resize_body()
+                    self._apply_results_visibility()
+                except Exception:
+                    pass
+                finally:
+                    self.main_container.opacity = 1
+
+            self._finalize_ev = Clock.schedule_once(_finalize, 0.02)
 
         finally:
             self._loading = False
@@ -2156,8 +2524,12 @@ class TimesheetTab(BoxLayout):
         lbl = Label(text=text, bold=True, color=HEADER_FG,
                     font_name=FONT_NAME,
                     font_size=dp(11),
-                    halign='center', valign='middle',
-                    text_size=(w - dp(12), h)) 
+                    halign='center', valign='middle')
+        
+        # ГЛАВНОЕ ИСПРАВЛЕНИЕ: привязываем text_size к размерам контейнера.
+        # Теперь при расширении группы текст не будет обрезаться.
+        lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0] - dp(8), val[1])))
+        
         holder.add_widget(lbl)
         return holder
 
@@ -2213,6 +2585,8 @@ class TimesheetTab(BoxLayout):
             self._suppress_result_cb = False
             
         # Авто-подгонка правой колонки при перерасчете
+        if getattr(self, '_is_syncing', False):
+            return
         if getattr(self, '_auto_fit_right_ev', None):
             self._auto_fit_right_ev.cancel()
         self._auto_fit_right_ev = Clock.schedule_once(lambda dt: self._auto_fit_right_columns(), 0.5)

@@ -23,7 +23,36 @@ from config import (FONT_NAME, LABEL_DARK, LABEL_LIGHT,
                     WEEKDAYS_SHORT)
 from ui_helpers import add_left_border, add_right_border
 
-
+def _is_widget_covered(widget):
+    """Возвращает True, если виджет перекрыт открытым Popup или DropDown."""
+    try:
+        from kivy.core.window import Window
+        from kivy.uix.popup import Popup
+        from kivy.uix.dropdown import DropDown
+        
+        modal = None
+        # В Kivy Window.children[0] — это самое верхнее (последнее добавленное) окно
+        for child in Window.children:
+            if isinstance(child, (Popup, DropDown)) and getattr(child, 'opacity', 1) > 0:
+                modal = child
+                break
+                
+        if modal is None:
+            return False
+            
+        p = widget.parent
+        depth = 0
+        # Ограничиваем глубину поиска, чтобы избежать зависаний
+        while p is not None and depth < 50:
+            if p is modal:
+                return False
+            p = p.parent
+            depth += 1
+            
+        return True
+    except Exception:
+        return False
+    
 # ---------------------------------------------------------------------------
 class HoverButton(Button):
     """Кнопка, которая мягко подсвечивается при наведении мыши."""
@@ -43,8 +72,6 @@ class HoverButton(Button):
     def _update_rect(self, *a):
         self._hover_rect.pos = self.pos
         self._hover_rect.size = self.size
-        if hasattr(self, '_border_line'):
-            self._border_line.rectangle = (self.x, self.y, self.width, self.height)
 
     def _on_parent(self, instance, parent):
         if parent is None:
@@ -60,6 +87,13 @@ class HoverButton(Button):
     def _on_mouse_pos(self, window, pos):
         if not self.get_root_window() or self.disabled:
             return
+            
+        if _is_widget_covered(self):
+            if self._hovering:
+                self._hovering = False
+                self._update_hover()  # <--- ИСПРАВЛЕНО ЗДЕСЬ
+            return
+
         try:
             wx, wy = self.to_window(self.x, self.y)
             if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
@@ -78,7 +112,6 @@ class HoverButton(Button):
             self._hover_color.rgba = (1, 1, 1, 0.15)
         else:
             self._hover_color.rgba = (1, 1, 1, 0)
-
 
 # ---------------------------------------------------------------------------
 class NavTextInput(TextInput):
@@ -333,6 +366,13 @@ class LightSpinnerOption(SpinnerOption):
     def _on_mouse_pos(self, window, pos):
         if not self.get_root_window() or self.disabled:
             return
+            
+        if _is_widget_covered(self):
+            if self._hovering:
+                self._hovering = False
+                self._update_bg()
+            return
+
         try:
             wx, wy = self.to_window(self.x, self.y)
             if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
