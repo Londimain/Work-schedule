@@ -211,12 +211,17 @@ def _data_dir():
     if getattr(sys, 'frozen', False):
         exe_dir = os.path.dirname(sys.executable)
         try:
-            test_file = os.path.join(exe_dir, ".write_test")
+            # Проверяем, можно ли писать в подпапку "Табель" (её создает установщик)
+            test_dir = os.path.join(exe_dir, "Табель")
+            os.makedirs(test_dir, exist_ok=True)
+            test_file = os.path.join(test_dir, ".write_test")
             with open(test_file, 'w') as f:
                 f.write("test")
             os.remove(test_file)
             return exe_dir
         except (PermissionError, OSError):
+            # Если прав все равно нет (например, программу просто скопировали в Program Files),
+            # уходим в Документы
             docs = os.path.join(os.path.expanduser('~'), 'Documents', 'TabelApp')
             os.makedirs(docs, exist_ok=True)
             return docs

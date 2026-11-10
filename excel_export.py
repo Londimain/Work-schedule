@@ -2,8 +2,10 @@
 # -*- coding: utf-8 -*-
 """Экспорт в Excel."""
 import os
+import platform
 import webbrowser
 import math
+import re
 from calendar import monthrange
 from datetime import date, datetime
 
@@ -55,38 +57,43 @@ def _excel_visual_width(txt):
             w += 0.65
     return w
 
-def _estimate_wrap_lines(text, max_chars=19):
-    """Точная эмуляция переноса строк в Excel (с учетом пробелов и дефисов)."""
+def _tnr_visual_width(txt):
+    """Ширина текста в единицах колонки для Times New Roman 11."""
+    if not txt:
+        return 0.0
+    w = 0.0
+    for ch in str(txt):
+        if ch == ' ':
+            w += 0.5
+        elif ch in 'МЖШЩЮФ':
+            w += 1.3
+        elif ch.isupper():
+            w += 1.25
+        elif ch.isalpha():
+            w += 1.0      # строчные кириллические — главные «виновники»
+        else:
+            w += 0.7
+    return w
+
+def _count_wrapped_lines(text, col_width_visual):
+    """Число строк переноса, в тех же единицах, что ширина колонки."""
     if not text:
         return 1
-    lines = 0
-    for paragraph in str(text).replace('\r', '').split('\n'):
-        if not paragraph:
-            lines += 1
+    # Доступная ширина: делаем запас в 3.0, чтобы точно не ошибиться с переносом
+    usable = max(col_width_visual - 3.0, 4.0)
+    lines, cur = 1, 0.0
+    for word in str(text).split():
+        w = _tnr_visual_width(word)
+        if cur > 0 and cur + 0.5 + w <= usable:
+            cur += 0.5 + w
             continue
-        current_line_len = 0
-        for word in paragraph.split(' '):
-            if not word:
-                continue
-            parts = word.split('-')
-            for i, part in enumerate(parts):
-                if i < len(parts) - 1:
-                    part += '-'
-                if not part:
-                    continue
-                if current_line_len == 0:
-                    current_line_len = len(part)
-                    lines += 1
-                elif current_line_len + 1 + len(part) <= max_chars:
-                    current_line_len += 1 + len(part)
-                else:
-                    lines += 1
-                    current_line_len = len(part)
-                
-                while current_line_len > max_chars:
-                    current_line_len -= max_chars
-                    lines += 1
-    return max(1, lines)
+        if cur > 0:
+            lines += 1
+        while w > usable:      # очень длинное слово Excel разорвёт
+            lines += 1
+            w -= usable
+        cur = w
+    return lines
 
 def format_name(name):
     if not name:
@@ -239,6 +246,10 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
                 dept = d
                 break
 
+    # --- ПРЕДВАРИТЕЛЬНЫЙ РАСЧЕТ ШИРИНЫ ДОЛЖНОСТИ ---
+    max_pos_visual = max((_excel_visual_width(emp.get('position', '').replace('\n', ' ').strip()) for emp in employees), default=0.0)
+    pos_visual = max(13.0, min(30.5, max_pos_visual + 4.5))
+
     night_flags = tab.app.data.get('night_flags', {})
     overtime_flags = tab.app.data.get('overtime_flags', {})
     no_weekends_flags = tab.app.data.get('no_weekends_flags', {})
@@ -254,8 +265,11 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     center = Alignment(horizontal='center', vertical='center', wrap_text=True)
     center_nowrap = Alignment(horizontal='center', vertical='center', wrap_text=False)
-    left_wrap = Alignment(horizontal='left', vertical='center', wrap_text=True)
-    left_nowrap = Alignment(horizontal='left', vertical='center', wrap_text=False)
+    
+    # Отступы (indent=1) для текста, чтобы не прилипал к границам
+    left_wrap = Alignment(horizontal='left', vertical='center', wrap_text=True, indent=1)
+    left_nowrap = Alignment(horizontal='left', vertical='center', wrap_text=False, indent=1)
+    
     vert = Alignment(horizontal='center', vertical='bottom', text_rotation=90, wrap_text=False)
     
     header_fill = PatternFill("solid", fgColor="E8E8E8")
@@ -263,14 +277,15 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
     holiday_fill = PatternFill("solid", fgColor="FFF3CC")
     total_fill = PatternFill("solid", fgColor="D0D0D0")
 
-    f_title = Font(name=EXCEL_FONT, size=14, bold=True, italic=True)
+    # ИЗМЕНЕНЫ РАЗМЕРЫ ШРИФТОВ
+    f_title = Font(name=EXCEL_FONT, size=15.5, bold=True, italic=True)
     f_date_bold = Font(name=EXCEL_FONT, size=12, bold=True)
-    f_italic = Font(name=EXCEL_FONT, size=11, italic=True)
+    f_italic = Font(name=EXCEL_FONT, size=13, italic=True)
     f_head = Font(name=EXCEL_FONT, size=11, bold=True)
     f_vert = Font(name=EXCEL_FONT, size=11)
     f_cell = Font(name=EXCEL_FONT, size=11)
-    f_sig = Font(name=EXCEL_FONT, size=13)
-    f_sig_bold = Font(name=EXCEL_FONT, size=13, bold=True)
+    f_sig = Font(name=EXCEL_FONT, size=14)
+    f_sig_bold = Font(name=EXCEL_FONT, size=14, bold=True)
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -281,70 +296,70 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
     end_days = start_days + days_in_month - 1
     total_cols = end_days + len(visible_columns)
     
-    title_end = min(end_days, 11)  # <--- УМЕНЬШЕНО ДО 11 (на 4 меньше)
+    title_end = min(end_days, 11)
     date_start = title_end + 1
     
     approve_col = max(end_days + 2, total_cols - 12) - 9
     director_col = approve_col - 1
     name_col = min(director_col + 5, total_cols)
 
-    # ---------- Строка 1 ----------
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=title_end)
-    c = ws.cell(row=1, column=1, value="табель учета использования рабочего времени")
+    # ---------- Строка 2 (Оставляем 1-ю строку пустой) ----------
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=title_end)
+    c = ws.cell(row=2, column=1, value="табель учета использования рабочего времени")
     c.font = f_title
-    c.alignment = left_nowrap  # <--- ВЫРАВНИВАНИЕ ПО ЛЕВОМУ КРАЮ
+    c.alignment = left_nowrap
 
     if end_days >= date_start:
         date_end = min(end_days, approve_col - 1)
         if date_start <= date_end:
-            ws.merge_cells(start_row=1, start_column=date_start, end_row=1, end_column=date_end)
-            c = ws.cell(row=1, column=date_start, value=f"{y}, {MONTHS[m-1].lower()} ({days_in_month} календарных дней)")
+            ws.merge_cells(start_row=2, start_column=date_start, end_row=2, end_column=date_end)
+            c = ws.cell(row=2, column=date_start, value=f"{y}, {MONTHS[m-1].lower()} ({days_in_month} календарных дней)")
             c.font = f_date_bold
-            c.alignment = center_nowrap  # <--- ИСПРАВЛЕНО (без переноса)
+            c.alignment = center_nowrap
 
     if approve_col <= total_cols:
-        ws.merge_cells(start_row=1, start_column=approve_col, end_row=1, end_column=total_cols)
-        c = ws.cell(row=1, column=approve_col, value="Утверждаю:")
+        ws.merge_cells(start_row=2, start_column=approve_col, end_row=2, end_column=total_cols)
+        c = ws.cell(row=2, column=approve_col, value="Утверждаю:")
         c.font = f_sig
         c.alignment = Alignment(horizontal='left', vertical='center', indent=1)
 
-    # ---------- Строка 2 ----------
-    ws.merge_cells('A2:C2')
-    c = ws.cell(row=2, column=1, value="Предприятие")
+    # ---------- Строка 3 ----------
+    ws.merge_cells('A3:C3')
+    c = ws.cell(row=3, column=1, value="Предприятие")
     c.font = f_italic
     c.alignment = center
     
     org_end = min(end_days, director_col - 1)
     if org_end >= 4:
-        ws.merge_cells(start_row=2, start_column=4, end_row=2, end_column=org_end)
-        c = ws.cell(row=2, column=4, value=org)
+        ws.merge_cells(start_row=3, start_column=4, end_row=3, end_column=org_end)
+        c = ws.cell(row=3, column=4, value=org)
         c.font = f_italic
         c.alignment = Alignment(horizontal='left', vertical='center', indent=1)
 
     if approve_col <= total_cols:
-        ws.merge_cells(start_row=2, start_column=director_col, end_row=2, end_column=max(director_col, name_col - 1))
-        c = ws.cell(row=2, column=director_col, value="Директор")
+        ws.merge_cells(start_row=3, start_column=director_col, end_row=3, end_column=max(director_col, name_col - 1))
+        c = ws.cell(row=3, column=director_col, value="Директор")
         c.font = f_sig
         c.alignment = Alignment(horizontal='right', vertical='center')
 
-        ws.merge_cells(start_row=2, start_column=name_col, end_row=2, end_column=total_cols)
-        c = ws.cell(row=2, column=name_col, value=director_name)
+        ws.merge_cells(start_row=3, start_column=name_col, end_row=3, end_column=total_cols)
+        c = ws.cell(row=3, column=name_col, value=director_name)
         c.font = f_sig
         c.alignment = Alignment(horizontal='right', vertical='center', indent=1)
 
-    # ---------- Строка 3 ----------
-    ws.merge_cells('A3:C3')
-    c = ws.cell(row=3, column=1, value="Отдел, цех, участок")
+    # ---------- Строка 4 ----------
+    ws.merge_cells('A4:C4')
+    c = ws.cell(row=4, column=1, value="Отдел, цех, участок")
     c.font = f_italic
     c.alignment = center
     
-    ws.merge_cells(start_row=3, start_column=4, end_row=3, end_column=end_days)
-    c = ws.cell(row=3, column=4, value=dept)
+    ws.merge_cells(start_row=4, start_column=4, end_row=4, end_column=end_days)
+    c = ws.cell(row=4, column=4, value=dept)
     c.font = f_italic
     c.alignment = Alignment(horizontal='left', vertical='center', indent=1)
 
     # ---------- Шапка таблицы ----------
-    row_h1, row_h2 = 5, 6
+    row_h1, row_h2 = 6, 7
     for col, label in [(1, "№"), (2, "Фамилия И.О."), (3, "Должность")]:
         c = ws.cell(row=row_h1, column=col, value=label)
         c.font = f_head
@@ -431,18 +446,18 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
 
         c_name = ws.cell(row=row, column=2, value=name_text)
         c_name.font = f_cell
-        c_name.alignment = left_nowrap  # <--- ФАМИЛИЯ БЕЗ ПЕРЕНОСА
+        c_name.alignment = left_nowrap
 
         c_pos = ws.cell(row=row, column=3, value=pos_text)
         c_pos.font = f_cell
-        c_pos.alignment = left_wrap     # <--- ДОЛЖНОСТЬ С ПЕРЕНОСОМ
+        c_pos.alignment = left_wrap
 
         for i, v in enumerate(values):
             col = start_days + i
             if str(v).strip() == '0': v = None
             c = ws.cell(row=row, column=col, value=v)
             c.font = f_cell
-            c.alignment = center
+            c.alignment = center_nowrap
             if v is not None:
                 w = _excel_visual_width(v)
                 if w > max_day_w[i]:
@@ -454,7 +469,10 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
         for _, key_, _w in visible_columns:
             val = emp_over.get(key_, res.get(key_, 0))
             if key_ in ('часы', 'сверхурочные', 'ночные', 'праздничные', 'выходные_часы'):
-                val = fmt_hours(val)
+                try:
+                    val = fmt_hours(float(str(val).replace(',', '.')))
+                except (ValueError, TypeError):
+                    pass
             if str(val).strip() in ('0', '0.0', '0.00'): val = None
             c = ws.cell(row=row, column=start_r, value=val)
             if val is not None: max_col_len[key_] = max(max_col_len[key_], len(str(val)))
@@ -462,11 +480,24 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
             c.alignment = center
             start_r += 1
 
-        est_lines_pos = _estimate_wrap_lines(pos_text, max_chars=19)
-        ws.row_dimensions[row].height = max(16, est_lines_pos * 17)
+        # === ЖЕСТКИЕ ПРАВИЛА ДЛЯ КАЖДОЙ СТРОКИ ===
+        est_lines = _count_wrapped_lines(pos_text, pos_visual)
+        if est_lines == 1:
+            ws.row_dimensions[row].height = 16.0
+        elif est_lines == 2:
+            ws.row_dimensions[row].height = 32.0
+        elif est_lines == 3:
+            ws.row_dimensions[row].height = 48.0
+        elif est_lines == 4:
+            ws.row_dimensions[row].height = 64.0
+        else:
+            ws.row_dimensions[row].height = est_lines * 16.0
+        # =================================================
+
         for col in range(1, total_cols + 1):
             ws.cell(row=row, column=col).border = border
         row += 1
+
 
     # ---------- ИТОГО ----------
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
@@ -503,68 +534,66 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
 
     row += 2
     ws.row_dimensions[row].height = 24
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4) # Расширено до 4
     c = ws.cell(row=row, column=1, value="Норма рабочего времени:")
     c.font = f_sig
     c.alignment = Alignment(horizontal='left', vertical='center')
-    c2 = ws.cell(row=row, column=4, value=f"{fmt_hours(norm_hours)} ч")
+    
+    ws.merge_cells(start_row=row, start_column=5, end_row=row, end_column=9) # Сдвинуто на 5
+    c2 = ws.cell(row=row, column=5, value=f"{fmt_hours(norm_hours)} ч")
     c2.font = f_sig_bold
     c2.alignment = Alignment(horizontal='left', vertical='center')
 
     row += 1
     ws.row_dimensions[row].height = 24
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
     c = ws.cell(row=row, column=1, value="Списочная численность:")
     c.font = f_sig
     c.alignment = Alignment(horizontal='left', vertical='center')
-    c2 = ws.cell(row=row, column=4, value=spis_count)
+    
+    ws.merge_cells(start_row=row, start_column=5, end_row=row, end_column=9)
+    c2 = ws.cell(row=row, column=5, value=spis_count)
     c2.font = f_sig_bold
     c2.alignment = Alignment(horizontal='left', vertical='center')
 
     row += 1
     ws.row_dimensions[row].height = 24
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
     c = ws.cell(row=row, column=1, value="Среднесписочная численность:")
     c.font = f_sig
     c.alignment = Alignment(horizontal='left', vertical='center')
+    
+    ws.merge_cells(start_row=row, start_column=5, end_row=row, end_column=9)
     val_avg = round(avg_count, 2)
     if val_avg == int(val_avg): val_avg = int(val_avg)
-    c2 = ws.cell(row=row, column=4, value=val_avg)
+    c2 = ws.cell(row=row, column=5, value=val_avg)
     c2.font = f_sig_bold
     c2.alignment = Alignment(horizontal='left', vertical='center')
 
     # ---------- ШИРИНЫ СТОЛБЦОВ ----------
     EXCEL_OFFSET = 5.0 / 7.0
 
-    # № — минимум 2.57, расширяем если номеров много
     max_num = max(1, len(employees))
     num_digits = len(str(max_num))
     num_visual = max(2.57, num_digits * 0.8 + 0.4)
     ws.column_dimensions['A'].width = num_visual + EXCEL_OFFSET
 
-    # Фамилия — жесткий минимум 16.0 (в единицах Excel) + запас 1.0 к самой длинной фамилии
     max_name_visual = max((_excel_visual_width(format_name(emp.get('name', ''))) for emp in employees), default=0.0)
-    name_visual = max(16.0, max_name_visual + 1.0)
+    name_visual = max(18.5, max_name_visual + 5.0)
     ws.column_dimensions['B'].width = name_visual + EXCEL_OFFSET
 
-    # Должность — реальная визуальная ширина + минимальный отступ
-    max_pos_visual = max((_excel_visual_width(emp.get('position', '').replace('\n', ' ').strip()) for emp in employees), default=0.0)
-    pos_visual = max(12.5, min(21.0, max_pos_visual + 0.5))
     ws.column_dimensions['C'].width = pos_visual + EXCEL_OFFSET
 
-    # Дни — минимум 2.57, + 0.5 к реальной ширине
     for i in range(days_in_month):
-        day_visual = max(2.57, max_day_w[i] + 0.5)
+        day_visual = max(2.8, max_day_w[i] + 1.2)
         ws.column_dimensions[get_column_letter(start_days + i)].width = day_visual + EXCEL_OFFSET
 
-    # Правые колонки (Итоги) — используем 0.55 на символ (цифры узкие) + 0.5 на отступы
     col_widths = {}
     for _, key_, _w in visible_columns:
-        content_visual = max_col_len[key_] * 0.55 + 0.5
-        visual_min = max(2.57, content_visual)
+        content_visual = max_col_len[key_] * 1.1 + 1.5
+        visual_min = max(2.8, content_visual)
         col_widths[key_] = visual_min + EXCEL_OFFSET
 
-    # Групповые минимумы (в визуальных единицах!)
     GROUP_MINS_VISUAL = {
         "Дни явок": 5.0,
         "Дни неявок": 8.0,
@@ -670,6 +699,10 @@ def export_short_excel(tab, *args):
                 dept = d
                 break
 
+    # --- ПРЕДВАРИТЕЛЬНЫЙ РАСЧЕТ ШИРИНЫ ДОЛЖНОСТИ ---
+    max_pos_visual = max((_excel_visual_width(emp.get('position', '').replace('\n', ' ').strip()) for emp in employees), default=0.0)
+    pos_visual = max(13.0, min(30.5, max_pos_visual + 4.5))
+
     overrides_all = tab.app.data.get('result_overrides', {}).get(key, {})
     day_types = [classify_day(y, m, d) for d in range(1, days_in_month + 1)]
     norm_hours, work_days, pre_count = calc_norm_hours(y, m)
@@ -678,21 +711,24 @@ def export_short_excel(tab, *args):
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     center = Alignment(horizontal='center', vertical='center', wrap_text=True)
     center_nowrap = Alignment(horizontal='center', vertical='center', wrap_text=False)
-    left_wrap = Alignment(horizontal='left', vertical='center', wrap_text=True)
-    left_nowrap = Alignment(horizontal='left', vertical='center', wrap_text=False)
+    
+    # Отступы (indent=1) для текста, чтобы не прилипал к границам
+    left_wrap = Alignment(horizontal='left', vertical='center', wrap_text=True, indent=1)
+    left_nowrap = Alignment(horizontal='left', vertical='center', wrap_text=False, indent=1)
     
     header_fill = PatternFill("solid", fgColor="E8E8E8")
     weekend_fill = PatternFill("solid", fgColor="FFDEDE")
     holiday_fill = PatternFill("solid", fgColor="FFF3CC")
     total_fill = PatternFill("solid", fgColor="D0D0D0")
     
-    f_title = Font(name=EXCEL_FONT, size=14, bold=True, italic=True)
+    # ИЗМЕНЕНЫ РАЗМЕРЫ ШРИФТОВ
+    f_title = Font(name=EXCEL_FONT, size=15.5, bold=True, italic=True)
     f_date_bold = Font(name=EXCEL_FONT, size=12, bold=True)
-    f_italic = Font(name=EXCEL_FONT, size=11, italic=True)
+    f_italic = Font(name=EXCEL_FONT, size=13, italic=True)
     f_head = Font(name=EXCEL_FONT, size=11, bold=True)
     f_cell = Font(name=EXCEL_FONT, size=11)
-    f_sig = Font(name=EXCEL_FONT, size=13)
-    f_sig_bold = Font(name=EXCEL_FONT, size=13, bold=True)
+    f_sig = Font(name=EXCEL_FONT, size=14)
+    f_sig_bold = Font(name=EXCEL_FONT, size=14, bold=True)
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -705,45 +741,45 @@ def export_short_excel(tab, *args):
     col_hours = end_days + 1
     col_off = end_days + 2
 
-    title_end = min(end_days, 11)  # <--- УМЕНЬШЕНО ДО 11
+    title_end = min(end_days, 11)
     date_start = title_end + 1
 
-    # Строка 1
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=title_end)
-    c = ws.cell(row=1, column=1, value="табель учета использования рабочего времени")
+    # Строка 2 (Оставляем 1-ю пустой)
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=title_end)
+    c = ws.cell(row=2, column=1, value="табель учета использования рабочего времени")
     c.font = f_title
-    c.alignment = left_nowrap  # <--- ВЫРАВНИВАНИЕ ПО ЛЕВОМУ КРАЮ
+    c.alignment = left_nowrap
     
     if end_days >= date_start:
-        ws.merge_cells(start_row=1, start_column=date_start, end_row=1, end_column=end_days)
-        c = ws.cell(row=1, column=date_start, value=f"{y}, {MONTHS[m-1].lower()} ({days_in_month} календарных дней)")
+        ws.merge_cells(start_row=2, start_column=date_start, end_row=2, end_column=end_days)
+        c = ws.cell(row=2, column=date_start, value=f"{y}, {MONTHS[m-1].lower()} ({days_in_month} календарных дней)")
         c.font = f_date_bold
-        c.alignment = center_nowrap  # <--- ИСПРАВЛЕНО (без переноса)
-
-    # Строка 2
-    ws.merge_cells('A2:C2')
-    c = ws.cell(row=2, column=1, value="Предприятие")
-    c.font = f_italic
-    c.alignment = center
-    
-    ws.merge_cells(start_row=2, start_column=start_days, end_row=2, end_column=end_days)
-    c = ws.cell(row=2, column=start_days, value=org)
-    c.font = f_italic
-    c.alignment = Alignment(horizontal='left', vertical='center', indent=1)
+        c.alignment = center_nowrap
 
     # Строка 3
     ws.merge_cells('A3:C3')
-    c = ws.cell(row=3, column=1, value="Отдел, цех, участок")
+    c = ws.cell(row=3, column=1, value="Предприятие")
     c.font = f_italic
     c.alignment = center
     
     ws.merge_cells(start_row=3, start_column=start_days, end_row=3, end_column=end_days)
-    c = ws.cell(row=3, column=start_days, value=dept)
+    c = ws.cell(row=3, column=start_days, value=org)
     c.font = f_italic
     c.alignment = Alignment(horizontal='left', vertical='center', indent=1)
 
-    # Шапка (строки 5 и 6)
-    row_h1, row_h2 = 5, 6
+    # Строка 4
+    ws.merge_cells('A4:C4')
+    c = ws.cell(row=4, column=1, value="Отдел, цех, участок")
+    c.font = f_italic
+    c.alignment = center
+    
+    ws.merge_cells(start_row=4, start_column=start_days, end_row=4, end_column=end_days)
+    c = ws.cell(row=4, column=start_days, value=dept)
+    c.font = f_italic
+    c.alignment = Alignment(horizontal='left', vertical='center', indent=1)
+
+    # Шапка (строки 6 и 7)
+    row_h1, row_h2 = 6, 7
     c = ws.cell(row=row_h1, column=1, value="№")
     c.font = f_head
     c.alignment = center
@@ -814,8 +850,18 @@ def export_short_excel(tab, *args):
         res = analyze_row(values, day_types, bool(night_flags.get(pos_name, False)), bool(no_weekends_flags.get(pos_name, False)))
         emp_over = overrides_all.get(emp_id, {})
 
-        hours_val = float(str(emp_over.get('часы', res.get('часы', 0.0))).replace(',', '.'))
-        off_val = int(float(str(emp_over.get('вых', res.get('вых', 0))).replace(',', '.')))
+        h_raw = emp_over.get('часы', res.get('часы', 0.0))
+        try:
+            hours_val = float(str(h_raw).replace(',', '.')) if str(h_raw).strip() else 0.0
+        except (ValueError, TypeError):
+            hours_val = 0.0
+
+        o_raw = emp_over.get('вых', res.get('вых', 0))
+        try:
+            off_val = int(float(str(o_raw).replace(',', '.'))) if str(o_raw).strip() else 0
+        except (ValueError, TypeError):
+            off_val = 0
+
         grand['часы'] += hours_val
         grand['вых'] += off_val
 
@@ -823,22 +869,21 @@ def export_short_excel(tab, *args):
         ws.cell(row=row, column=1).alignment = center
         c_name = ws.cell(row=row, column=2, value=name_text)
         c_name.font = f_cell
-        c_name.alignment = left_nowrap  # <--- ФАМИЛИЯ БЕЗ ПЕРЕНОСА
+        c_name.alignment = left_nowrap
 
         c_pos = ws.cell(row=row, column=3, value=pos_text)
         c_pos.font = f_cell
-        c_pos.alignment = left_wrap     # <--- ДОЛЖНОСТЬ С ПЕРЕНОСОМ
+        c_pos.alignment = left_wrap
 
         for i, v in enumerate(values):
             col = start_days + i
             if str(v).strip() == '0': v = None
             c = ws.cell(row=row, column=col, value=v)
             c.font = f_cell
-            c.alignment = center
+            c.alignment = center_nowrap
             if v is not None:
                 w = _excel_visual_width(v)
-                if w > max_day_w[i]:
-                    max_day_w[i] = w
+                if w > max_day_w[i]: max_day_w[i] = w
             if day_types[i] == 'weekend': c.fill = weekend_fill
             elif day_types[i] == 'holiday': c.fill = holiday_fill
 
@@ -855,12 +900,24 @@ def export_short_excel(tab, *args):
         c.font = f_cell
         c.alignment = center
 
-        est_lines_pos = _estimate_wrap_lines(pos_text, max_chars=19)
-        ws.row_dimensions[row].height = max(16, est_lines_pos * 17)
+        # === ЖЕСТКИЕ ПРАВИЛА ДЛЯ КАЖДОЙ СТРОКИ ===
+        est_lines = _count_wrapped_lines(pos_text, pos_visual)
+        if est_lines == 1:
+            ws.row_dimensions[row].height = 16.0
+        elif est_lines == 2:
+            ws.row_dimensions[row].height = 32.0
+        elif est_lines == 3:
+            ws.row_dimensions[row].height = 48.0
+        elif est_lines == 4:
+            ws.row_dimensions[row].height = 64.0
+        else:
+            ws.row_dimensions[row].height = est_lines * 16.0
+        # =================================================
 
         for col in range(1, total_cols + 1):
             ws.cell(row=row, column=col).border = border
         row += 1
+
 
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
     c = ws.cell(row=row, column=1, value="ИТОГО")
@@ -889,13 +946,16 @@ def export_short_excel(tab, *args):
     c.fill = total_fill
     ws.row_dimensions[row].height = 20
 
+    # В кратком отчете тоже сдвигаем значения правее
     row += 2
     ws.row_dimensions[row].height = 24
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
     c = ws.cell(row=row, column=1, value="Норма рабочего времени:")
     c.font = f_sig
     c.alignment = Alignment(horizontal='left', vertical='center')
-    c2 = ws.cell(row=row, column=start_days, value=f"{fmt_hours(norm_hours)} ч")
+    
+    ws.merge_cells(start_row=row, start_column=5, end_row=row, end_column=7)
+    c2 = ws.cell(row=row, column=5, value=f"{fmt_hours(norm_hours)} ч")
     c2.font = f_sig_bold
     c2.alignment = Alignment(horizontal='left', vertical='center')
 
@@ -907,30 +967,28 @@ def export_short_excel(tab, *args):
     num_visual = max(2.57, num_digits * 0.8 + 0.4)
     ws.column_dimensions['A'].width = num_visual + EXCEL_OFFSET
 
-    # Фамилия — жесткий минимум 16.0 (в единицах Excel) + запас 1.0 к самой длинной фамилии
     max_name_visual = max((_excel_visual_width(format_name(emp.get('name', ''))) for emp in employees), default=0.0)
-    name_visual = max(16.0, max_name_visual + 1.0)
+    name_visual = max(18.5, max_name_visual + 5.0)
     ws.column_dimensions['B'].width = name_visual + EXCEL_OFFSET
 
-    max_pos_visual = max((_excel_visual_width(emp.get('position', '').replace('\n', ' ').strip()) for emp in employees), default=0.0)
-    pos_visual = max(12.5, min(21.0, max_pos_visual + 0.5))
     ws.column_dimensions['C'].width = pos_visual + EXCEL_OFFSET
 
     for i in range(days_in_month):
-        day_visual = max(2.57, max_day_w[i] + 0.5)
+        day_visual = max(2.8, max_day_w[i] + 1.2)
         ws.column_dimensions[get_column_letter(start_days + i)].width = day_visual + EXCEL_OFFSET
 
     ws.column_dimensions[get_column_letter(col_hours)].width = (
-        max(2.57, max_col_len['часы'] * 0.55 + 0.5) + EXCEL_OFFSET
+        max(2.8, max_col_len['часы'] * 1.1 + 1.5) + EXCEL_OFFSET
     )
     ws.column_dimensions[get_column_letter(col_off)].width = (
-        max(2.57, max_col_len['вых'] * 0.55 + 0.5) + EXCEL_OFFSET
+        max(2.8, max_col_len['вых'] * 1.1 + 1.5) + EXCEL_OFFSET
     )
 
-    ws.row_dimensions[1].height = 35
-    ws.row_dimensions[2].height = 25
+    # Сдвиг строк из-за пустой первой строки
+    ws.row_dimensions[2].height = 35
     ws.row_dimensions[3].height = 25
-    ws.row_dimensions[4].height = 10
+    ws.row_dimensions[4].height = 25
+    ws.row_dimensions[5].height = 10
     ws.row_dimensions[row_h1].height = 20
     ws.row_dimensions[row_h2].height = 50
 
@@ -953,6 +1011,64 @@ def export_short_excel(tab, *args):
         pass
 
     _save_and_open(ws, wb, y, dept, key, "_short")
+
+def _create_network_shortcut(target_dir):
+    """Создает ярлык на рабочем столе для сетевой папки с отчетами, если его нет."""
+    import platform
+    if platform.system() != 'Windows':
+        return
+        
+    is_network = False
+    if target_dir.startswith('\\\\'):
+        is_network = True
+    else:
+        try:
+            import win32file
+            drive = os.path.splitdrive(target_dir)[0]
+            if drive:
+                if win32file.GetDriveType(drive + '\\') == win32file.DRIVE_REMOTE:
+                    is_network = True
+        except Exception:
+            pass
+
+    if not is_network:
+        return
+
+    desktop_paths = [
+        os.path.join(os.path.expanduser("~"), "Desktop"),
+        os.path.join(os.path.expanduser("~"), "Рабочий стол")
+    ]
+    
+    desktop = None
+    for p in desktop_paths:
+        if os.path.exists(p):
+            desktop = p
+            break
+            
+    if not desktop:
+        return
+
+    shortcut_path = os.path.join(desktop, "Сетевые отчёты табеля.lnk")
+
+    if os.path.exists(shortcut_path):
+        return
+
+    try:
+        import win32com.client
+        shell = win32com.client.Dispatch("WScript.Shell")
+        shortcut = shell.CreateShortCut(shortcut_path)
+        shortcut.Targetpath = target_dir
+        shortcut.WorkingDirectory = target_dir
+        
+        exe_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "Work schedule.exe"))
+        if os.path.exists(exe_path):
+            shortcut.IconLocation = exe_path
+            
+        shortcut.save()
+        print(f"Создан ярлык: {shortcut_path}")
+    except Exception as e:
+        print("Не удалось создать ярлык на сетевые отчеты:", e)
+
 
 def _save_and_open(ws, wb, y, dept, key, suffix, custom_dir=None):
     def _sanitize_folder(name):
@@ -980,6 +1096,10 @@ def _save_and_open(ws, wb, y, dept, key, suffix, custom_dir=None):
         ws.page_margins.top = 0.4
         ws.page_margins.bottom = 0.4
         wb.save(path)
+        
+        base_out_dir = custom_dir if custom_dir else os.path.join(BASE_DIR, "Табель")
+        _create_network_shortcut(base_out_dir)
+        
     except Exception as e:
         print("Ошибка сохранения Excel:", e)
         return

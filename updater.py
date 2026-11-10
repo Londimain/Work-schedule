@@ -13,13 +13,16 @@ from kivy.uix.button import Button
 from kivy.uix.scrollview import ScrollView
 from kivy.metrics import dp
 
-from config import FONT_NAME, LABEL_LIGHT, APP_VERSION
+from config import FONT_NAME, LABEL_LIGHT, APP_VERSION, DATA_FILE
 from ui_helpers import bind_enter_key
 
-# --- НАСТРОЙКА ПУТИ К ФАЙЛУ ОБНОВЛЕНИЙ ---
-# Укажите путь к version.json (сетевой диск или URL)
-# Пример: UPDATE_JSON_URL = r"\\Server\Share\TabelApp\version.json"
-UPDATE_JSON_URL = r"\\Server\Share\TabelApp\version.json"
+def get_update_url():
+    """Возвращает путь к version.json в той же папке, где лежит база данных."""
+    try:
+        net_dir = os.path.dirname(DATA_FILE)
+        return os.path.join(net_dir, "version.json")
+    except Exception:
+        return ""
 
 def _parse_version(v_str):
     """Превращает '1.2.9' в [1, 2, 9] для сравнения"""
@@ -30,30 +33,38 @@ def _parse_version(v_str):
 
 def check_for_updates(app):
     """Вызывается при старте приложения"""
-    if not UPDATE_JSON_URL or UPDATE_JSON_URL == r"\\Server\Share\TabelApp\version.json":
-        return # Путь не настроен, выходим
+    update_url = get_update_url()
+    
+    if not update_url or not os.path.exists(update_url):
+        # Файл не найден, выходим молча (нет сети или локальный режим)
+        return
 
     def _bg_check(dt):
         try:
-            # Читаем локальный файл или скачиваем по URL
-            if UPDATE_JSON_URL.startswith("http"):
-                req = urllib.request.Request(UPDATE_JSON_URL, headers={'User-Agent': 'Mozilla/5.0'})
+            if update_url.startswith("http"):
+                req = urllib.request.Request(update_url, headers={'User-Agent': 'Mozilla/5.0'})
                 with urllib.request.urlopen(req, timeout=5) as response:
                     data = json.loads(response.read().decode('utf-8'))
             else:
-                with open(UPDATE_JSON_URL, 'r', encoding='utf-8') as f:
+                with open(update_url, 'r', encoding='utf-8') as f:
                     data = json.load(f)
 
             latest_ver = data.get("latest_version")
             download_url = data.get("download_url")
             notes = data.get("release_notes", "Нет описания.")
 
+            if not latest_ver or not download_url:
+                return
+
             current_ver = _parse_version(APP_VERSION)
             new_ver = _parse_version(latest_ver)
 
             if new_ver > current_ver:
+                # Вызываем показ окна в главном потоке Kivy
                 Clock.schedule_once(lambda dt: _show_update_popup(app, latest_ver, download_url, notes), 0)
+                
         except Exception as e:
+            # Ошибки чтения выводим в консоль (пользователь их не увидит, если console=False)
             print("Ошибка проверки обновлений:", e)
 
     # Запускаем проверку в фоне через 2 секунды после старта
@@ -107,6 +118,13 @@ def _download_and_run(app, download_url):
 
     def _bg_download(dt):
         try:
+            # --- ДОБАВЛЕНА ЭТА ПРОВЕРКА ---
+            # Если путь относительный (просто имя файла), ищем его рядом с базой
+            if not download_url.startswith("http") and not os.path.isabs(download_url):
+                base_dir = os.path.dirname(DATA_FILE)
+                download_url = os.path.join(base_dir, download_url)
+            # -------------------------------
+
             # 1. Определяем, куда скачивать
             temp_dir = os.environ.get('TEMP', os.path.dirname(os.path.abspath(__file__)))
             local_setup_path = os.path.join(temp_dir, "Tabel_Setup_Update.exe")
@@ -118,7 +136,7 @@ def _download_and_run(app, download_url):
                 import shutil
                 shutil.copy2(download_url, local_setup_path)
 
-            # 3. Запускаем установщик в тихом режиме и закрываем программу
+            # 3. Запускаем установщик
             Clock.schedule_once(lambda dt: _run_installer(app, local_setup_path, popup), 0)
 
         except Exception as e:
@@ -130,7 +148,6 @@ def _download_and_run(app, download_url):
 def _run_installer(app, setup_path, popup):
     try:
         # Запускаем установщик с ключом /SILENT (без участия пользователя)
-        # Inno Setup поддерживает этот ключ из коробки
         subprocess.Popen([setup_path, '/SILENT', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS'])
         popup.dismiss()
         app.stop() # Закрываем текущее приложение, чтобы установщик мог перезаписать файлы

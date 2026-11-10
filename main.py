@@ -115,8 +115,6 @@ class TabelApp(App):
         current_path = local_data.get('network_data_path', '')
 
         content = BoxLayout(orientation='vertical', spacing=10, padding=20)
-        
-        # --- ДОБАВЛЕНО: Распорка сверху для центрирования ---
         content.add_widget(Widget(size_hint_y=1)) 
         
         content.add_widget(Label(
@@ -126,18 +124,53 @@ class TabelApp(App):
             font_name=FONT_NAME, font_size=dp(15), size_hint_y=None, height=dp(60)
         ))
         
+        # --- БЛОК ВЫБОРА ПУТИ С КНОПКОЙ "ОБЗОР" ---
+        path_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=10)
+        
         path_input = TextInput(
             text=current_path, multiline=False, 
             font_size=dp(15), font_name=FONT_NAME,
             foreground_color=(0.05, 0.05, 0.05, 1),
             background_color=(1, 1, 1, 1),
             padding=[dp(8), dp(12), dp(8), dp(12)],
-            size_hint_y=None, height=dp(44),
             hint_text=r"\\Desktop-0sja6qs\soft\Tabel\tabel_data.json"
         )
-        content.add_widget(path_input)
+        path_row.add_widget(path_input)
         
-        # --- ДОБАВЛЕНО: Распорка снизу для центрирования ---
+        browse_btn = HoverButton(
+            text="Обзор...", 
+            size_hint=(None, 1), width=dp(100),
+            background_color=(0.4, 0.5, 0.7, 1), color=(1,1,1,1),
+            font_name=FONT_NAME
+        )
+        path_row.add_widget(browse_btn)
+        content.add_widget(path_row)
+        
+        def open_browse(*args):
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes('-topmost', True)
+                
+                file_path = filedialog.askopenfilename(
+                    title="Выберите файл базы данных",
+                    filetypes=[("Файлы базы данных", "*.json"), ("Все файлы", "*.*")]
+                )
+                root.destroy()
+                
+                if file_path:
+                    # Приводим путь к виду Windows (заменяем слеши)
+                    file_path = os.path.normpath(file_path)
+                    path_input.text = file_path
+            except Exception as e:
+                print("Ошибка открытия окна выбора файла:", e)
+
+        browse_btn.bind(on_press=open_browse)
+        # ---------------------------------------------
+        
         content.add_widget(Widget(size_hint_y=1))
 
         btns = BoxLayout(size_hint_y=None, height=dp(44), spacing=10)
