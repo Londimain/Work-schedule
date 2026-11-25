@@ -37,6 +37,11 @@ if getattr(sys, 'frozen', False):
 
 import config
 import platform
+
+# ВАЖНО: глобальный патч Ctrl+кириллица для всех TextInput.
+# Импортировать ДО всех остальных модулей, чтобы патч успел примениться.
+import kivy_patches  # noqa: F401
+
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.window import Window
@@ -48,7 +53,7 @@ from kivy.uix.widget import Widget
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.uix.textinput import TextInput
-from ui_widgets import HoverButton as Button
+from ui_widgets import HoverButton as Button, HoverTabItem
 
 from config import (DATA_FILE, decorate_title, apply_app_icon, FONT_NAME, LABEL_LIGHT, APP_VERSION, LOCAL_FILE)
 import data_utils
@@ -401,22 +406,22 @@ class TabelApp(App):
         root_tabs = TabbedPanel(do_default_tab=False)
         root_tabs.tab_width = dp(230)
 
-        emp_tab = TabbedPanelItem(text="Рабочий персонал", color=config.TABLE_FG)
+        emp_tab = HoverTabItem(text="Рабочий персонал", color=config.TABLE_FG)
         self.emp_tab = EmployeesTab(self)
         emp_tab.add_widget(self.emp_tab)
         root_tabs.add_widget(emp_tab)
 
-        ts_tab = TabbedPanelItem(text="Табель", color=config.TABLE_FG)
+        ts_tab = HoverTabItem(text="Табель", color=config.TABLE_FG)
         self.ts_tab = TimesheetTab(self)
         ts_tab.add_widget(self.ts_tab)
         root_tabs.add_widget(ts_tab)
 
-        rep_tab = TabbedPanelItem(text="Отчёт и печать", color=config.TABLE_FG)
+        rep_tab = HoverTabItem(text="Отчёт и печать", color=config.TABLE_FG)
         self.rep_tab = ReportTab(self)
         rep_tab.add_widget(self.rep_tab)
         root_tabs.add_widget(rep_tab)
 
-        about_tab = TabbedPanelItem(text="О программе", color=config.TABLE_FG)
+        about_tab = HoverTabItem(text="О программе", color=config.TABLE_FG)
         self.about_tab = AboutTab(self)
         about_tab.add_widget(self.about_tab)
         root_tabs.add_widget(about_tab)

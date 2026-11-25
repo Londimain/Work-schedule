@@ -57,8 +57,10 @@ class NavTextInput(TextInput):
     shift_state = {'held': False}
 
     def on_touch_down(self, touch):
-        if getattr(touch, 'is_mouse_scrolling', False): return False  
-        if NavTextInput.shift_state['held'] and self.collide_point(*touch.pos): return True
+        if getattr(touch, 'is_mouse_scrolling', False):
+            return False
+        if NavTextInput.shift_state['held'] and self.collide_point(*touch.pos):
+            return True
         return super().on_touch_down(touch)
 
     def insert_text(self, substring, from_undo=False):
@@ -66,21 +68,36 @@ class NavTextInput(TextInput):
             self._just_focused = False
             if not self.selection_text:
                 self.text = ''
-                try: self.cursor = (0, 0)
-                except Exception: pass
+                try:
+                    self.cursor = (0, 0)
+                except Exception:
+                    pass
         return super().insert_text(substring, from_undo=from_undo)
 
     def keyboard_on_key_down(self, window, keycode, text, modifiers):
+        # ВАЖНО: переводим Ctrl+кириллица → Ctrl+ASCII ДО вызова колбэков,
+        # чтобы кастомные обработчики диапазонов в табеле (Ctrl+C/V на
+        # нескольких ячейках) тоже работали на русской раскладке.
+        try:
+            from kivy_patches import _translate_keycode
+            keycode = _translate_keycode(keycode, modifiers)
+        except Exception:
+            pass
+
         key = keycode[0] if isinstance(keycode, (tuple, list)) else keycode
         mods = modifiers or []
         if self.extra_key_callback is not None and key is not None:
             try:
-                if self.extra_key_callback(key, mods): return True
-            except Exception: pass
+                if self.extra_key_callback(key, mods):
+                    return True
+            except Exception:
+                pass
         if self.nav_callback is not None and key is not None:
             try:
-                if self.nav_callback(key, mods): return True
-            except Exception: pass
+                if self.nav_callback(key, mods):
+                    return True
+            except Exception:
+                pass
         return super().keyboard_on_key_down(window, keycode, text, modifiers)
 
 class CenteredField(FloatLayout):

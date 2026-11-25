@@ -20,6 +20,7 @@ from config import (FONT_NAME, LABEL_DARK, LABEL_LIGHT,
                     WEEKEND_BG, WEEKEND_FG, HOLIDAY_BG, HOLIDAY_FG,
                     WORKDAY_BG, WORKDAY_FG, HEADER_BG, HEADER_FG,
                     VHEADER_BG, VHEADER_FG, HEADER_DIVIDER,
+                    HIGHLIGHTED_CELL_BG, HIGHLIGHTED_CELL_FG,   # <<< добавить
                     WEEKDAYS_SHORT)
 from ui_helpers import add_left_border, add_right_border
 
@@ -30,26 +31,18 @@ def _is_widget_covered(widget):
         from kivy.uix.popup import Popup
         from kivy.uix.dropdown import DropDown
         
-        modal = None
-        # В Kivy Window.children[0] — это самое верхнее (последнее добавленное) окно
-        for child in Window.children:
+        # Проверяем только верхние окна (попапы обычно лежат в конце списка)
+        for child in Window.children[:5]:
             if isinstance(child, (Popup, DropDown)) and getattr(child, 'opacity', 1) > 0:
-                modal = child
-                break
-                
-        if modal is None:
-            return False
-            
-        p = widget.parent
-        depth = 0
-        # Ограничиваем глубину поиска, чтобы избежать зависаний
-        while p is not None and depth < 50:
-            if p is modal:
-                return False
-            p = p.parent
-            depth += 1
-            
-        return True
+                p = widget.parent
+                depth = 0
+                while p is not None and depth < 50:
+                    if p == child:
+                        return False
+                    p = p.parent
+                    depth += 1
+                return True
+        return False
     except Exception:
         return False
     
@@ -88,22 +81,18 @@ class HoverButton(Button):
         if not self.get_root_window() or self.disabled:
             return
             
-        if _is_widget_covered(self):
-            if self._hovering:
-                self._hovering = False
-                self._update_hover()  # <--- ИСПРАВЛЕНО ЗДЕСЬ
-            return
-
         try:
             wx, wy = self.to_window(self.x, self.y)
-            if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
-                if not self._hovering:
-                    self._hovering = True
-                    self._update_hover()
-            else:
-                if self._hovering:
-                    self._hovering = False
-                    self._update_hover()
+            inside = wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height
+            
+            if inside and not self._hovering:
+                if _is_widget_covered(self):
+                    return
+                self._hovering = True
+                self._update_hover()
+            elif not inside and self._hovering:
+                self._hovering = False
+                self._update_hover()
         except Exception:
             pass
 
@@ -367,22 +356,18 @@ class LightSpinnerOption(SpinnerOption):
         if not self.get_root_window() or self.disabled:
             return
             
-        if _is_widget_covered(self):
-            if self._hovering:
-                self._hovering = False
-                self._update_bg()
-            return
-
         try:
             wx, wy = self.to_window(self.x, self.y)
-            if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
-                if not self._hovering:
-                    self._hovering = True
-                    self._update_bg()
-            else:
-                if self._hovering:
-                    self._hovering = False
-                    self._update_bg()
+            inside = wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height
+            
+            if inside and not self._hovering:
+                if _is_widget_covered(self):
+                    return
+                self._hovering = True
+                self._update_bg()
+            elif not inside and self._hovering:
+                self._hovering = False
+                self._update_bg()
         except Exception:
             pass
 
@@ -502,25 +487,35 @@ class VerticalLabel(Widget):
 class DayCell(BoxLayout):
     def __init__(self, text='', day_type='work', show_right=True,
                  on_key_callback=None, on_cell_touch_down=None,
-                 extra_key_callback=None, **kwargs):
+                 extra_key_callback=None,
+                 is_highlighted=False, on_cell_right_click=None,
+                 **kwargs):
         super().__init__(orientation='horizontal', **kwargs)
         self._on_cell_touch_down = on_cell_touch_down
-        self._highlighted = False
+        self._on_cell_right_click = on_cell_right_click
+        self._day_type = day_type
+        self._highlighted = False                      # range-selection (как было)
+        self._is_shift_highlighted = bool(is_highlighted)
 
-        if day_type == 'holiday':
+        # Приоритет: пометка > выходной/праздник > рабочий
+        if self._is_shift_highlighted:
+            bg, fg = HIGHLIGHTED_CELL_BG, HIGHLIGHTED_CELL_FG
+        elif day_type == 'holiday':
             bg, fg = HOLIDAY_BG, HOLIDAY_FG
         elif day_type == 'weekend':
             bg, fg = WEEKEND_BG, WEEKEND_FG
         else:
             bg, fg = WORKDAY_BG, WORKDAY_FG
+
         with self.canvas.before:
-            Color(*bg)
+            self._bg_color = Color(*bg)                # <-- сохранили
             self._rect = Rectangle(pos=self.pos, size=self.size)
             Color(0.20, 0.45, 0.90, 0.35)
             self._hl_rect = Rectangle(pos=self.pos, size=(0, 0))
         self.bind(pos=self._update_rect, size=self._update_rect)
         if show_right:
             add_right_border(self, color=HEADER_DIVIDER, thickness=1)
+
         _w = CenteredField(
             text=text, font_size=dp(14), pad_lr=dp(1),
             halign='center', fg_color=fg,
@@ -530,7 +525,27 @@ class DayCell(BoxLayout):
             extra_key_callback=extra_key_callback,
         )
         self.input = _w.input
+        self._field = _w                                # <-- сохранили
         self.add_widget(_w)
+
+    # --- Пометить/снять пометку «смена 2» --------------------------------
+    def set_highlighted_shift(self, on):
+        on = bool(on)
+        if on == self._is_shift_highlighted:
+            return
+        self._is_shift_highlighted = on
+        if on:
+            bg, fg = HIGHLIGHTED_CELL_BG, HIGHLIGHTED_CELL_FG
+        elif self._day_type == 'holiday':
+            bg, fg = HOLIDAY_BG, HOLIDAY_FG
+        elif self._day_type == 'weekend':
+            bg, fg = WEEKEND_BG, WEEKEND_FG
+        else:
+            bg, fg = WORKDAY_BG, WORKDAY_FG
+        self._bg_color.rgba = bg
+        if hasattr(self, '_field'):
+            self._field._fg = fg
+            self._field._rebuild_texture(self._field.text)
 
     def set_highlight(self, on):
         self._highlighted = bool(on)
@@ -538,6 +553,15 @@ class DayCell(BoxLayout):
 
     def on_touch_down(self, touch):
         if self.collide_point(*touch.pos):
+            btn = getattr(touch, 'button', None)
+            if btn == 'right':
+                if self._on_cell_right_click is not None:
+                    try:
+                        self._on_cell_right_click(self, touch)
+                    except Exception:
+                        pass
+                    return True
+                return False
             if self._on_cell_touch_down is not None:
                 try:
                     self._on_cell_touch_down(self, touch)
@@ -553,7 +577,6 @@ class DayCell(BoxLayout):
             self._hl_rect.size = self.size
         else:
             self._hl_rect.size = (0, 0)
-
 
 class ResultCell(BoxLayout):
     def __init__(self, text='0', fg_color=LABEL_LIGHT,
@@ -646,3 +669,86 @@ class DayHeader(BoxLayout):
     def _update_rect(self, *a):
         self._rect.pos = self.pos
         self._rect.size = self.size
+        
+from kivy.uix.tabbedpanel import TabbedPanelItem
+from kivy.uix.spinner import Spinner
+from kivy.core.window import Window
+from kivy.graphics import Color, Rectangle
+
+class HoverTabItem(TabbedPanelItem):
+    """Вкладка с эффектом легкого осветления при наведении."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._hovering = False
+        with self.canvas.after:
+            self._hover_color = Color(1, 1, 1, 0)
+            self._hover_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self._update_rect, size=self._update_rect)
+        
+        Window.bind(mouse_pos=self._on_mouse_pos)
+        self.bind(parent=self._on_parent)
+
+    def _on_parent(self, instance, parent):
+        if parent is None:
+            try: Window.unbind(mouse_pos=self._on_mouse_pos)
+            except Exception: pass
+
+    def _update_rect(self, *a):
+        self._hover_rect.pos = self.pos
+        self._hover_rect.size = self.size
+
+    def _on_mouse_pos(self, window, pos):
+        if not self.get_root_window() or self.disabled: return
+        try:
+            wx, wy = self.to_window(self.x, self.y)
+            if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
+                if not self._hovering:
+                    self._hovering = True
+                    self._hover_color.rgba = (1, 1, 1, 0.15)
+            else:
+                if self._hovering:
+                    self._hovering = False
+                    self._hover_color.rgba = (1, 1, 1, 0)
+        except Exception: pass
+
+class HoverSpinner(Spinner):
+    """Спиннер (выпадающий список) с эффектом наведения."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._hovering = False
+        with self.canvas.after:
+            self._hover_color = Color(1, 1, 1, 0)
+            self._hover_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self._update_rect, size=self._update_rect, state=self._on_state)
+        
+        Window.bind(mouse_pos=self._on_mouse_pos)
+        self.bind(parent=self._on_parent)
+
+    def _on_parent(self, instance, parent):
+        if parent is None:
+            try: Window.unbind(mouse_pos=self._on_mouse_pos)
+            except Exception: pass
+
+    def _update_rect(self, *a):
+        self._hover_rect.pos = self.pos
+        self._hover_rect.size = self.size
+
+    def _on_state(self, inst, value):
+        self._update_hover()
+
+    def _on_mouse_pos(self, window, pos):
+        if not self.get_root_window() or self.disabled: return
+        try:
+            wx, wy = self.to_window(self.x, self.y)
+            if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
+                if not self._hovering:
+                    self._hovering = True
+                    self._update_hover()
+            else:
+                if self._hovering:
+                    self._hovering = False
+                    self._update_hover()
+        except Exception: pass
+
+    def _update_hover(self):
+        self._hover_color.rgba = (1, 1, 1, 0.15) if (self._hovering or self.state == 'down') else (1, 1, 1, 0)

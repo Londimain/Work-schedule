@@ -3,19 +3,30 @@
 """Вкладка «О программе»."""
 import config  # noqa: F401
 
+import os
+import sys
+import json
 import webbrowser
-
+import platform
+import kivy
+from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.button import Button
+from ui_widgets import HoverButton
 from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 from kivy.graphics import Color, Rectangle
+from kivy.uix.popup import Popup
 
 from config import FONT_NAME, LABEL_LIGHT, ICON_EMOJI, DELETE_PASSWORD, APP_VERSION
-from ui_helpers import NoOverscrollEffect
+from ui_helpers import NoOverscrollEffect, bind_enter_key
 
+# Пытаемся импортировать функцию обновления (если файла нет - не падаем)
+try:
+    from updater import check_for_updates
+except ImportError:
+    check_for_updates = None
 
 class AboutTab(BoxLayout):
     def __init__(self, app, **kwargs):
@@ -36,9 +47,32 @@ class AboutTab(BoxLayout):
 
         top.add_widget(Widget())
 
-        gh_btn = Button(
+        # --- КНОПКА ПРОВЕРКИ ОБНОВЛЕНИЙ ---
+        update_btn = HoverButton(
+            text="Проверить обновления",
+            size_hint_x=None, width=dp(210),
+            font_name=FONT_NAME, font_size=dp(15), bold=True,
+            background_color=(0.25, 0.55, 0.85, 1),  # Синий
+            color=(1, 1, 1, 1),
+        )
+        update_btn.bind(on_press=self._on_check_updates)
+        top.add_widget(update_btn)
+
+        # --- КНОПКА ИСТОРИИ ОБНОВЛЕНИЙ ---
+        history_btn = HoverButton(
+            text="История обновлений",
+            size_hint_x=None, width=dp(200),
+            font_name=FONT_NAME, font_size=dp(15), bold=True,
+            background_color=(0.55, 0.40, 0.75, 1),  # Фиолетовый
+            color=(1, 1, 1, 1),
+        )
+        history_btn.bind(on_press=self._on_show_history)
+        top.add_widget(history_btn)
+
+        # --- КНОПКА GITHUB ---
+        gh_btn = HoverButton(
             text="Открыть репозиторий на GitHub",
-            size_hint_x=None, width=dp(320),
+            size_hint_x=None, width=dp(310),
             font_name=FONT_NAME, font_size=dp(15), bold=True,
             background_color=(0.15, 0.25, 0.45, 1),
             color=(1, 1, 1, 1),
@@ -69,8 +103,20 @@ class AboutTab(BoxLayout):
         content.add_widget(self._mk_sub(
             "Настольное приложение на Kivy для ведения табеля по форме Т-13 "
             "(упрощённой). Работает локально и поддерживает совместную работу "
-            "нескольких компьютеров через общий файл данных.\n"
+            "нескольких компьютеров через общий файл данных.\n\n"
             f"Текущая версия: [b]{APP_VERSION}[/b]"))
+        content.add_widget(self._mk_sep())
+
+        # ==========================================
+        # ПОСЛЕДНИЕ ИЗМЕНЕНИЯ
+        # ==========================================
+        content.add_widget(self._mk_h2("Последние изменения в этой версии"))
+        content.add_widget(self._mk_p(
+            "•  [b]Упрощено удаление[/b]: при удалении сотрудников и отделов теперь запрашивается только пароль администратора.\n"
+            "•  [b]Исправлена верстка[/b]: убрано наложение текста в окне запроса пароля при удалении подписанта.\n"
+            "•  [b]Исправлена таблица табеля[/b]: устранено появление черной полосы в конце чисел месяца.\n"
+            "•  [b]Исправлено автообновление[/b]: программа больше не пытается скачать файл базы данных (tabel_data.json) вместо установщика."
+        ))
         content.add_widget(self._mk_sep())
 
         # ==========================================
@@ -97,6 +143,7 @@ class AboutTab(BoxLayout):
             "строка ИТОГО, подписи, условные обозначения.\n"
             "•  [b]Массовая выгрузка[/b] всех отделов за месяц или за все месяцы (защищена паролем).\n"
             "•  [b]Защита паролем[/b] на удаление записей и изменение признаков должностей.\n"
+            "•  [b]Пароли отделов[/b] с возможностью быстрого копирования по двойному клику.\n"
             "•  [b]Автообновление[/b]: при старте программа проверяет новую версию "
             "в сетевой папке и предлагает установить.\n"
             "•  [b]Индикатор связи с базой[/b]: в верхней панели цветная точка "
@@ -322,24 +369,216 @@ class AboutTab(BoxLayout):
             "изменение признаков должностей («Ночные», «Сверхурочные», «Без вых.») "
             "и массовая выгрузка Excel защищены паролем.\n\n"
             "Пароль по умолчанию: [b]****[/b]\n"
-            "Изменить пароль можно в файле [b]config.py[/b] (константа DELETE_PASSWORD)."))
+            "Изменить пароль можно в файле [b]config.py[/b] (константа DELETE_PASSWORD).\n\n"
+            "[color=ffaa00]Пароли отделов:[/color]\n"
+            "В окне «Отделы» -> «Показать пароли» (требуется пароль администратора) "
+            "можно просмотреть пароли всех отделов. Для быстрого копирования пароля "
+            "достаточно сделать по нему [b]двойной клик левой кнопкой мыши[/b]. "
+            "При успешном копировании текст подсветится зелёным цветом."))
 
         content.add_widget(self._mk_sep())
 
         # ==========================================
-        # СИСТЕМА
+        # СИСТЕМА И ОРГАНИЗАЦИЯ (ДОБАВЛЕНО)
         # ==========================================
-        content.add_widget(self._mk_h2("Технические сведения"))
+        content.add_widget(self._mk_h2("Об организации и системе"))
+        
+        content.add_widget(self._mk_p(
+            "[b][color=ffaa00]ОАО «Компания МогНат» © 2026[/color][/b]\n\n"
+            "Все права защищены. Программа разработана для внутреннего использования.\n\n"
+            "[color=ffaa00]Разработчик:[/color] Ильенков С.М."
+        ))
+
         content.add_widget(self._mk_p(
             "  •  Защита от случайного повторного запуска (на Windows — по Mutex).\n"
             "  •  Автоматическая проверка целостности шрифтов и иконки при старте.\n"
             "  •  Атомарная запись файлов через временный файл (защита от повреждения при сбое).\n"
             "  •  Блокировка файла на время записи (filelock) — предотвращает конфликты "
             "при одновременном сохранении с нескольких ПК.\n"
-            "  •  Резервное копирование: достаточно скопировать tabel_data.json в надёжное место."))
+            "  •  Резервное копирование: достаточно скопировать tabel_data.json в надёжное место."
+        ))
+
+        # Технические версии
+        tech_text = (
+            f"Python: {platform.python_version()}  |  "
+            f"Kivy: {kivy.__version__}\n\n"
+            f"Текущая ОС: {platform.system()} {platform.release()}  "
+            f"(Программа поддерживает Windows 7, 8, 10 и 11)"
+        )
+        content.add_widget(self._mk_p(f"[color=888888]{tech_text}[/color]"))
 
         scroll.add_widget(content)
         self.add_widget(scroll)
+
+    # ------------------------------------------------------------------
+    # МЕТОДЫ ДЛЯ ПРОВЕРКИ ОБНОВЛЕНИЙ (ДОБАВЛЕНО)
+    # ------------------------------------------------------------------
+    def _on_check_updates(self, *args):
+        if check_for_updates:
+            import inspect
+            try:
+                # Проверяем, обновлен ли updater.py и есть ли там аргумент manual
+                sig = inspect.signature(check_for_updates)
+                has_manual = 'manual' in sig.parameters
+            except Exception:
+                has_manual = False
+                
+            if has_manual:
+                # Если updater.py новый, передаем manual=True
+                Clock.schedule_once(lambda dt: check_for_updates(self.app, manual=True), 0.1)
+            else:
+                # Если updater.py старый, вызываем без аргумента и предупреждаем
+                Clock.schedule_once(lambda dt: check_for_updates(self.app), 0.1)
+                self._show_msg("Внимание", "Вы используете старую версию updater.py.\nЕсли обновлений нет, окно не появится.\n\nПожалуйста, обновите файл updater.py.")
+        else:
+            self._show_msg("Ошибка", "Модуль обновления (updater.py) не найден в папке с программой.")
+
+    def _find_version_json(self):
+        """Ищет version.json там же, где его ищет updater.py."""
+        candidates = []
+        # 1. Рядом с базой данных (основной путь updater.py)
+        try:
+            if config.DATA_FILE:
+                net_dir = os.path.dirname(config.DATA_FILE)
+                candidates.append(os.path.join(net_dir, "version.json"))
+        except Exception:
+            pass
+        # 2. Рядом с приложением (exe / скрипт)
+        try:
+            if getattr(sys, 'frozen', False):
+                base = os.path.dirname(sys.executable)
+            else:
+                base = os.path.dirname(os.path.abspath(__file__))
+            candidates.append(os.path.join(base, "version.json"))
+        except Exception:
+            pass
+        # 3. Внутри ресурсов PyInstaller (если встроили)
+        try:
+            meipass = getattr(sys, '_MEIPASS', None)
+            if meipass:
+                candidates.append(os.path.join(meipass, "version.json"))
+        except Exception:
+            pass
+
+        for p in candidates:
+            if p and os.path.exists(p):
+                return p
+        return candidates[0] if candidates else None
+
+    def _on_show_history(self, *args):
+        """Открывает окно с историей обновлений."""
+        json_path = self._find_version_json()
+
+        content = BoxLayout(orientation='vertical', spacing=8, padding=(10, 10))
+
+        scroll = ScrollView(scroll_type=['bars'], effect_cls=NoOverscrollEffect)
+        box = BoxLayout(orientation='vertical', size_hint_y=None,
+                        spacing=dp(6), padding=(dp(12), dp(6)))
+        box.bind(minimum_height=box.setter('height'))
+
+        history = []
+        error_msg = None
+
+        if json_path and os.path.exists(json_path):
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                history = data.get('history', []) or []
+                # Fallback для старых version.json без поля history
+                if not history and data.get('latest_version'):
+                    history = [{
+                        'version': data.get('latest_version', '—'),
+                        'date': '—',
+                        'notes': data.get('release_notes', ''),
+                    }]
+            except Exception as e:
+                error_msg = f"Ошибка чтения version.json:\n{e}"
+        else:
+            error_msg = ("Файл version.json не найден.\n\n"
+                         "Проверенный путь:\n" + (json_path or "—"))
+
+        if error_msg:
+            box.add_widget(Label(
+                text=error_msg, color=(1, 0.55, 0.45, 1),
+                font_name=FONT_NAME, font_size=dp(14),
+                halign='center', valign='middle',
+                size_hint_y=None, height=dp(120)))
+        elif not history:
+            box.add_widget(Label(
+                text="История обновлений пуста.",
+                color=LABEL_LIGHT, font_name=FONT_NAME,
+                font_size=dp(14), halign='center', valign='middle',
+                size_hint_y=None, height=dp(80)))
+        else:
+            for item in history:
+                ver = str(item.get('version', '—'))
+                date = str(item.get('date', '')).strip()
+                notes = item.get('notes', '') or ''
+
+                # Если дата есть и это не прочерк — показываем её в скобках
+                if date and date != '—':
+                    header_text = (f"[b][color=4da6ff]Версия {ver}[/color][/b]  "
+                                   f"[color=888888]({date})[/color]")
+                else:
+                    header_text = f"[b][color=4da6ff]Версия {ver}[/color][/b]"
+
+                ver_lbl = Label(
+                    text=header_text,
+                    markup=True, color=LABEL_LIGHT,
+                    font_name=FONT_NAME, font_size=dp(15),
+                    halign='left', valign='middle', size_hint_y=None)
+                ver_lbl.bind(width=lambda i, v: setattr(i, 'text_size', (v, None)))
+                ver_lbl.bind(texture_size=lambda i, v: setattr(i, 'height', v[1] + dp(6)))
+                box.add_widget(ver_lbl)
+
+                notes_lbl = Label(
+                    text=notes if notes.strip() else '—',
+                    markup=False,
+                    color=(0.88, 0.88, 0.88, 1),
+                    font_name=FONT_NAME, font_size=dp(13),
+                    halign='left', valign='top', size_hint_y=None)
+                notes_lbl.bind(width=lambda i, v: setattr(i, 'text_size', (v, None)))
+                notes_lbl.bind(texture_size=lambda i, v: setattr(i, 'height', v[1]))
+                box.add_widget(notes_lbl)
+
+                sep = Label(
+                    text="[color=444444]" + "─" * 70 + "[/color]",
+                    markup=True, font_name=FONT_NAME,
+                    font_size=dp(10), size_hint_y=None,
+                    height=dp(18), halign='center', valign='middle')
+                box.add_widget(sep)
+
+        scroll.add_widget(box)
+        content.add_widget(scroll)
+
+        close_btn = HoverButton(
+            text="Закрыть", size_hint_y=None, height=dp(42),
+            background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1),
+            font_name=FONT_NAME, bold=True)
+        content.add_widget(close_btn)
+
+        popup = Popup(
+            title="История обновлений", content=content,
+            size_hint=(0.75, 0.75),
+            title_color=LABEL_LIGHT, title_font=FONT_NAME,
+            auto_dismiss=False)
+
+        close_btn.bind(on_press=popup.dismiss)
+        try:
+            bind_enter_key(popup, popup.dismiss)
+        except Exception:
+            pass
+        popup.open()
+        
+    def _show_msg(self, title, text):
+        content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+        content.add_widget(Label(text=text, color=LABEL_LIGHT, font_name=FONT_NAME, halign='center'))
+        btn = HoverButton(text="ОК", size_hint_y=None, height=dp(40), font_name=FONT_NAME)
+        content.add_widget(btn)
+        p = Popup(title=title, content=content, size_hint=(0.5, 0.3), 
+                  title_color=LABEL_LIGHT, title_font=FONT_NAME)
+        btn.bind(on_press=p.dismiss)
+        p.open()
 
     # ------------------------------------------------------------------
     # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ ТЕКСТА С РАЗМЕТКОЙ

@@ -34,7 +34,7 @@ from ui_helpers import (NoOverscrollEffect, add_top_border, add_bottom_border,
                         add_left_border, add_right_border, vsep, ask_password_and_run,
                         bind_enter_key)
 from config import DELETE_PASSWORD
-from ui_widgets import HoverButton as Button, LightSpinnerOption
+from ui_widgets import HoverButton as Button, LightSpinnerOption, HoverSpinner
 from excel_export import export_full_excel, export_short_excel
 
 # ==============================================================================
@@ -115,22 +115,18 @@ class HoverClickableRow(ButtonBehavior, BoxLayout):
         if not self.get_root_window() or self.disabled:
             return
             
-        if self._is_covered():
-            if self._hovering:
-                self._hovering = False
-                self._update_bg()
-            return
-            
         try:
             wx, wy = self.to_window(self.x, self.y)
-            if wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height:
-                if not self._hovering:
-                    self._hovering = True
-                    self._update_bg()
-            else:
-                if self._hovering:
-                    self._hovering = False
-                    self._update_bg()
+            inside = wx <= pos[0] <= wx + self.width and wy <= pos[1] <= wy + self.height
+            
+            if inside and not self._hovering:
+                if self._is_covered():
+                    return
+                self._hovering = True
+                self._update_bg()
+            elif not inside and self._hovering:
+                self._hovering = False
+                self._update_bg()
         except Exception:
             pass
 
@@ -231,95 +227,154 @@ class ReportTab(BoxLayout):
     def _build(self):
         top = BoxLayout(size_hint_y=None, height=dp(52), spacing=5, padding=5)
 
-        top.add_widget(Label(text="Месяц:", size_hint_x=None, width=dp(70),
-                             color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(15)))
-        self.month_spinner = Spinner(text=MONTHS[datetime.now().month - 1],
-                                     values=MONTHS, size_hint_x=None, width=dp(150),
-                                     font_name=FONT_NAME, background_color=SPINNER_BG, 
-                                     color=SPINNER_FG, option_cls=LightSpinnerOption)
-        top.add_widget(self.month_spinner)
+        # --- Левая часть: Период (35% ширины) ---
+        left_box = BoxLayout(size_hint_x=0.35, spacing=5)
+        left_box.add_widget(Label(
+            text="Месяц:", size_hint_x=None, width=dp(60),
+            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14)))
+        self.month_spinner = HoverSpinner(
+            text=MONTHS[datetime.now().month - 1],
+            values=MONTHS, size_hint_x=1,
+            font_name=FONT_NAME, background_color=SPINNER_BG,
+            color=SPINNER_FG, option_cls=LightSpinnerOption)
+        left_box.add_widget(self.month_spinner)
 
-        top.add_widget(Label(text="Год:", size_hint_x=None, width=dp(50),
-                             color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(15)))
-        self.year_spinner = Spinner(text=str(datetime.now().year),
-                                    values=YEARS, size_hint_x=None, width=dp(100),
-                                    font_name=FONT_NAME, background_color=SPINNER_BG, 
-                                    color=SPINNER_FG, option_cls=LightSpinnerOption)
-        top.add_widget(self.year_spinner)
+        left_box.add_widget(Label(
+            text="Год:", size_hint_x=None, width=dp(40),
+            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14)))
+        self.year_spinner = HoverSpinner(
+            text=str(datetime.now().year),
+            values=YEARS, size_hint_x=1,
+            font_name=FONT_NAME, background_color=SPINNER_BG,
+            color=SPINNER_FG, option_cls=LightSpinnerOption)
+        left_box.add_widget(self.year_spinner)
+        top.add_widget(left_box)
 
-        top.add_widget(Widget())
+        # --- Правая часть: Кнопки (65% ширины) ---
+        right_box = BoxLayout(size_hint_x=0.65, spacing=4)
 
-        signers_btn = Button(text="Доп. подписанты", size_hint_x=None, width=dp(180),
-                             font_name=FONT_NAME, font_size=dp(14), bold=True,
-                             background_color=(0.5, 0.4, 0.75, 1), color=(1, 1, 1, 1))
+        def make_btn(text, hint_x, bg):
+            b = Button(
+                text=text,
+                size_hint_x=hint_x,
+                font_name=FONT_NAME,
+                font_size=dp(13),
+                bold=True,
+                background_color=bg,
+                color=(1, 1, 1, 1),
+                shorten=True,
+                shorten_from='right',
+                halign='center',
+                valign='middle',
+            )
+            # Даём Kivy знать границы для центрирования текста
+            b.bind(size=lambda inst, val: setattr(
+                inst, 'text_size', (val[0] - dp(8), val[1])))
+            return b
+
+        signers_btn = make_btn("Доп. подписанты", 1.6, (0.5, 0.4, 0.75, 1))
         signers_btn.bind(on_press=self.show_signers_popup)
-        top.add_widget(signers_btn)
+        right_box.add_widget(signers_btn)
 
-        top.add_widget(Widget(size_hint_x=None, width=dp(15)))
+        # Небольшой фиксированный отступ
+        right_box.add_widget(Widget(size_hint_x=None, width=dp(10)))
 
-        legend_box = BoxLayout(size_hint_x=None, width=dp(220), spacing=dp(4), padding=(0, 0, dp(10), 0))
+        # Блок «Условные обозначения» — тоже адаптивный
+        legend_box = BoxLayout(
+            size_hint_x=2.0, spacing=dp(4), padding=(0, 0, dp(10), 0))
         is_legend_on = get_local_show_legend()
-        self.legend_cb = CheckBox(active=is_legend_on, size_hint_x=None, width=dp(30), color=(1, 1, 1, 1))
-        self.legend_cb.bind(active=lambda inst, val: set_local_show_legend(val))
-        legend_lbl = Label(text="Условные обозначения", color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14))
+        self.legend_cb = CheckBox(
+            active=is_legend_on, size_hint_x=None, width=dp(30),
+            color=(1, 1, 1, 1))
+        self.legend_cb.bind(
+            active=lambda inst, val: set_local_show_legend(val))
+        legend_lbl = Label(
+            text="Условные обозначения", color=LABEL_LIGHT,
+            font_name=FONT_NAME, font_size=dp(13),
+            shorten=True, shorten_from='right',
+            halign='left', valign='middle')
+        legend_lbl.bind(size=lambda inst, val: setattr(
+            inst, 'text_size', (val[0], val[1])))
         legend_box.add_widget(self.legend_cb)
         legend_box.add_widget(legend_lbl)
-        top.add_widget(legend_box)
+        right_box.add_widget(legend_box)
 
-        excel_btn = Button(text="Сохранить в Excel", size_hint_x=None, width=dp(200),
-                           font_name=FONT_NAME, font_size=dp(15), bold=True,
-                           background_color=(0.25, 0.55, 0.30, 1), color=(1, 1, 1, 1))
+        excel_btn = make_btn("Сохранить в Excel", 1.8, (0.25, 0.55, 0.30, 1))
         excel_btn.bind(on_press=lambda *a: export_full_excel(self))
-        top.add_widget(excel_btn)
+        right_box.add_widget(excel_btn)
 
-        excel_short_btn = Button(text="Кратко в Excel", size_hint_x=None, width=dp(170),
-                                 font_name=FONT_NAME, font_size=dp(15), bold=True,
-                                 background_color=(0.20, 0.45, 0.55, 1), color=(1, 1, 1, 1))
+        excel_short_btn = make_btn("Кратко в Excel", 1.5, (0.20, 0.45, 0.55, 1))
         excel_short_btn.bind(on_press=lambda *a: export_short_excel(self))
-        top.add_widget(excel_short_btn)
+        right_box.add_widget(excel_short_btn)
 
-        admin_btn = Button(text="Выгрузить всё", size_hint_x=None, width=dp(150),
-                           font_name=FONT_NAME, font_size=dp(15), bold=True,
-                           background_color=(0.4, 0.5, 0.7, 1), color=(1, 1, 1, 1))
-        
+        admin_btn = make_btn("Выгрузить всё", 1.3, (0.4, 0.5, 0.7, 1))
         admin_btn.bind(on_press=lambda *a: ask_password_and_run(
-            DELETE_PASSWORD, 
+            DELETE_PASSWORD,
             self.show_admin_export_dialog,
             title="Массовая выгрузка",
             btn_text="Выгрузить",
             password_prompt="Введите пароль для выгрузки ВСЕХ отделов:"
         ))
-        top.add_widget(admin_btn)
+        right_box.add_widget(admin_btn)
 
+        top.add_widget(right_box)
         self.add_widget(top)
 
-        row2 = BoxLayout(size_hint_y=None, height=dp(46), spacing=5, padding=(5, 0, 5, 5))
+        # --- Вторая строка: Организация/Директор (тоже адаптивная) ---
+        row2 = BoxLayout(size_hint_y=None, height=dp(46),
+                         spacing=5, padding=(5, 0, 5, 5))
+
+        # --- Поле Организация ---
+        lbl_org = Label(
+            text="Организация:", size_hint_x=None, width=dp(95),
+            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14),
+            size_hint_y=None, height=dp(30),
+            valign='middle', halign='left')
         
-        row2.add_widget(Label(text="Организация:", size_hint_x=None, width=dp(95),
-                             color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14)))
-        
+        lbl_org.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+        row2.add_widget(lbl_org)
+
         self.org_input = TextInput(
             text=self.app.data.get('organization', DEFAULT_ORG),
             multiline=False, font_size=dp(14), font_name=FONT_NAME,
-            foreground_color=(0.05, 0.05, 0.05, 1), background_color=(1, 1, 1, 1),
-            padding=[dp(8), dp(8), dp(8), dp(8)],
-            size_hint=(None, None), size=(dp(250), dp(30))
-        )
+            foreground_color=(0.05, 0.05, 0.05, 1),
+            background_color=(1, 1, 1, 1),
+            padding=[dp(8), dp(7), dp(8), dp(7)], # Симметричные отступы для центрирования
+            halign='left',
+            size_hint_x=0.35, size_hint_y=None, height=dp(30))
+        
+        # Фиксируем высоту text_size, равной высоте шрифта (16px), чтобы текст и курсор встали по центру
+        self.org_input.bind(size=lambda inst, val: setattr(
+            inst, 'text_size', (val[0] - dp(16), val[1] - dp(14))
+        ))
         self.org_input.bind(text=self._on_org_change)
         row2.add_widget(self.org_input)
 
         row2.add_widget(Widget(size_hint_x=None, width=dp(10)))
 
-        row2.add_widget(Label(text="Директор:", size_hint_x=None, width=dp(75),
-                             color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14)))
-        
+        # --- Поле Директор ---
+        lbl_dir = Label(
+            text="Директор:", size_hint_x=None, width=dp(75),
+            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14),
+            size_hint_y=None, height=dp(30),
+            valign='middle', halign='left')
+            
+        lbl_dir.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+        row2.add_widget(lbl_dir)
+
         self.dir_input = TextInput(
             text=self.app.data.get('director_name', DEFAULT_DIRECTOR),
             multiline=False, font_size=dp(14), font_name=FONT_NAME,
-            foreground_color=(0.05, 0.05, 0.05, 1), background_color=(1, 1, 1, 1),
-            padding=[dp(8), dp(8), dp(8), dp(8)],
-            size_hint=(None, None), size=(dp(200), dp(30))
-        )
+            foreground_color=(0.05, 0.05, 0.05, 1),
+            background_color=(1, 1, 1, 1),
+            padding=[dp(8), dp(7), dp(8), dp(7)], # Симметричные отступы для центрирования
+            halign='left',
+            size_hint_x=0.35, size_hint_y=None, height=dp(30))
+        
+        # Фиксируем высоту text_size, равной высоте шрифта (16px), чтобы текст и курсор встали по центру
+        self.dir_input.bind(size=lambda inst, val: setattr(
+            inst, 'text_size', (val[0] - dp(16), val[1] - dp(14))
+        ))
         self.dir_input.bind(text=self._on_dir_change)
         row2.add_widget(self.dir_input)
 
@@ -337,10 +392,12 @@ class ReportTab(BoxLayout):
                   size=lambda i, v: setattr(i._rect, 'size', v))
         self.add_widget(line)
 
-        scroll = ScrollView(scroll_type=['bars'], effect_cls=NoOverscrollEffect)
-        self.preview = Label(text="", size_hint_y=None, halign='left',
-                              valign='top', padding=(20, 20),
-                              font_name=FONT_NAME, font_size=dp(13), color=config.TABLE_FG)
+        scroll = ScrollView(scroll_type=['bars'],
+                            effect_cls=NoOverscrollEffect)
+        self.preview = Label(
+            text="", size_hint_y=None, halign='left',
+            valign='top', padding=(20, 20),
+            font_name=FONT_NAME, font_size=dp(13), color=config.TABLE_FG)
         self.preview.bind(width=lambda *a: setattr(
             self.preview, 'text_size', (self.preview.width - 40, None)))
         self.preview.bind(texture_size=self.preview.setter('size'))
@@ -597,15 +654,14 @@ class ReportTab(BoxLayout):
                             set_local_signers(signers)
                             
                             def _process_delete(dt):
-                                # Сохранение в базу (self.app.safe_save) больше не вызывается,
-                                # так как общая база не меняется.
                                 self.update_preview()
                                 rebuild_list()
                             Clock.schedule_once(_process_delete, 0)
 
+                        # Убрали длинное описание, оставив только запрос пароля
                         ask_password_and_run(
-                            DELETE_PASSWORD, do_delete, 
-                            description=f"Убрать подписанта «{s_p} — {s_n}»\nиз вашего списка?"
+                            DELETE_PASSWORD, do_delete,
+                            title="Удаление подписанта"
                         )
                     return delete
                 del_btn.bind(on_press=make_del(i))
@@ -860,9 +916,10 @@ class ReportTab(BoxLayout):
                 def launch_auth(*args):
                     picker.unbind(on_dismiss=launch_auth)
                     dbg("delete_shared: Picker полностью закрылся, открываем запрос пароля")
+                    # Убрали длинное описание, оставив только запрос пароля
                     ask_password_and_run(
                         DELETE_PASSWORD, do_delete,
-                        description=f"Удалить из базы «{p_pos} — {p_nm}»?\n(удалится у всех)"
+                        title="Удаление из базы"
                     )
                 
                 picker.bind(on_dismiss=launch_auth)
@@ -1036,7 +1093,12 @@ class ReportTab(BoxLayout):
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
             no_weekends_on = bool(no_weekends_flags.get(pos_name, False))
-            res = analyze_row(values, day_types, night_on, no_weekends_on)
+            hl_all = self.app.data.get('day_highlights', {}) or {}
+            month_hl = hl_all.get(key, {}) or {}
+            # ...
+            emp_hl = set(month_hl.get(emp_id, []))
+            res = analyze_row(values, day_types, night_on, no_weekends_on,
+                              highlighted_days=emp_hl)
             if overtime_on:
                 apply_overtime(res, norm_hours)
             else:
@@ -1154,7 +1216,11 @@ class ReportTab(BoxLayout):
             night_on = bool(night_flags.get(pos_name, False))
             overtime_on = bool(overtime_flags.get(pos_name, False))
             no_weekends_on = bool(no_weekends_flags.get(pos_name, False))
-            res = analyze_row(values, day_types, night_on, no_weekends_on)
+            hl_all = self.app.data.get('day_highlights', {}) or {}
+            month_hl = hl_all.get(key, {}) or {}
+            emp_hl = set(month_hl.get(emp.get('id'), []))
+            res = analyze_row(values, day_types, night_on, no_weekends_on,
+                              highlighted_days=emp_hl)
             if overtime_on:
                 apply_overtime(res, norm_hours)
             else:
@@ -1172,6 +1238,9 @@ class ReportTab(BoxLayout):
         lines += ["", sep, "  Нажмите «Сохранить в Excel», чтобы получить файл .xlsx"]
         self.preview.text = "\n".join(lines)
 
+    # ==================================================================
+    #  МАССОВАЯ ВЫГРУЗКА — шаг 1: что выгружать
+    # ==================================================================
     def show_admin_export_dialog(self, *args):
         content = BoxLayout(orientation='vertical', spacing=10, padding=15)
         content.add_widget(Widget(size_hint_y=1))
@@ -1183,12 +1252,17 @@ class ReportTab(BoxLayout):
 
         content.add_widget(Widget(size_hint_y=0.5))
 
-        btns_choice = BoxLayout(orientation='vertical', spacing=10, size_hint_y=None, height=dp(98))
-        
-        btn_cur = Button(text=f"Только текущий месяц ({self.month_spinner.text} {self.year_spinner.text})",
-                         background_color=(0.25, 0.55, 0.85, 1), color=(1,1,1,1), font_name=FONT_NAME)
-        btn_all = Button(text="ВСЕ месяцы, где есть данные",
-                         background_color=(0.4, 0.5, 0.7, 1), color=(1,1,1,1), font_name=FONT_NAME)
+        btns_choice = BoxLayout(orientation='vertical', spacing=10,
+                                size_hint_y=None, height=dp(98))
+
+        btn_cur = Button(
+            text=f"Только текущий месяц ({self.month_spinner.text} {self.year_spinner.text})",
+            background_color=(0.25, 0.55, 0.85, 1), color=(1, 1, 1, 1),
+            font_name=FONT_NAME)
+        btn_all = Button(
+            text="ВСЕ месяцы, где есть данные",
+            background_color=(0.4, 0.5, 0.7, 1), color=(1, 1, 1, 1),
+            font_name=FONT_NAME)
 
         btns_choice.add_widget(btn_cur)
         btns_choice.add_widget(btn_all)
@@ -1196,7 +1270,8 @@ class ReportTab(BoxLayout):
 
         content.add_widget(Widget(size_hint_y=1))
 
-        btn_cancel = Button(text="Отмена", color=(1,1,1,1), font_name=FONT_NAME, size_hint_y=None, height=dp(44))
+        btn_cancel = Button(text="Отмена", color=(1, 1, 1, 1),
+                            font_name=FONT_NAME, size_hint_y=None, height=dp(44))
         content.add_widget(btn_cancel)
 
         popup_choice = Popup(title="Параметры выгрузки", content=content,
@@ -1205,13 +1280,70 @@ class ReportTab(BoxLayout):
 
         def _proceed(export_all_months):
             popup_choice.dismiss()
-            self._pick_folder_and_export(export_all_months)
+            self._ask_destination_and_export(export_all_months)
 
         btn_cur.bind(on_press=lambda *a: _proceed(False))
         btn_all.bind(on_press=lambda *a: _proceed(True))
         btn_cancel.bind(on_press=popup_choice.dismiss)
         popup_choice.open()
 
+    # ==================================================================
+    #  МАССОВАЯ ВЫГРУЗКА — шаг 2: куда сохранять
+    # ==================================================================
+    def _ask_destination_and_export(self, export_all_months):
+        content = BoxLayout(orientation='vertical', spacing=10, padding=15)
+        content.add_widget(Widget(size_hint_y=1))
+
+        content.add_widget(Label(
+            text="Куда сохранить отчёты?",
+            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(16), bold=True,
+            size_hint_y=None, height=dp(30)))
+
+        content.add_widget(Widget(size_hint_y=0.5))
+
+        btn_default = Button(
+            text="В стандартную папку «Табель/»\n(с ярлыком на рабочем столе)",
+            background_color=(0.25, 0.55, 0.85, 1), color=(1, 1, 1, 1),
+            font_name=FONT_NAME, size_hint_y=None, height=dp(60))
+        btn_custom = Button(
+            text="Выбрать другую папку...",
+            background_color=(0.4, 0.5, 0.7, 1), color=(1, 1, 1, 1),
+            font_name=FONT_NAME, size_hint_y=None, height=dp(44))
+
+        content.add_widget(btn_default)
+        content.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        content.add_widget(btn_custom)
+        content.add_widget(Widget(size_hint_y=1))
+
+        btn_cancel = Button(text="Отмена", color=(1, 1, 1, 1),
+                            font_name=FONT_NAME, size_hint_y=None, height=dp(44))
+        content.add_widget(btn_cancel)
+
+        popup = Popup(title="Куда сохранить", content=content,
+                      size_hint=(0.6, 0.5), title_color=LABEL_LIGHT,
+                      title_font=FONT_NAME, auto_dismiss=False)
+
+        def _use_default(*a):
+            popup.dismiss()
+            import os
+            from config import BASE_DIR
+            target_dir = os.path.join(BASE_DIR, "Табель")
+            os.makedirs(target_dir, exist_ok=True)
+            self._do_admin_export(target_dir, export_all_months,
+                                  use_default_dir=True)
+
+        def _use_custom(*a):
+            popup.dismiss()
+            self._pick_folder_and_export(export_all_months)
+
+        btn_default.bind(on_press=_use_default)
+        btn_custom.bind(on_press=_use_custom)
+        btn_cancel.bind(on_press=popup.dismiss)
+        popup.open()
+
+    # ==================================================================
+    #  МАССОВАЯ ВЫГРУЗКА — шаг 2-б: выбор произвольной папки (tkinter)
+    # ==================================================================
     def _pick_folder_and_export(self, export_all_months):
         import os
         target_dir = ""
@@ -1221,7 +1353,7 @@ class ReportTab(BoxLayout):
 
             root = tk.Tk()
             root.withdraw()
-            
+
             if os.path.exists(config.ICON_PATH):
                 try:
                     root.iconbitmap(default=config.ICON_PATH)
@@ -1229,7 +1361,8 @@ class ReportTab(BoxLayout):
                     pass
 
             root.attributes('-topmost', True)
-            target_dir = filedialog.askdirectory(title="Выберите папку для сохранения Excel-файлов")
+            target_dir = filedialog.askdirectory(
+                title="Выберите папку для сохранения Excel-файлов")
             root.destroy()
         except Exception as e:
             print("Не удалось открыть системное окно выбора папки (tkinter):", e)
@@ -1238,9 +1371,14 @@ class ReportTab(BoxLayout):
         if not target_dir or not os.path.isdir(target_dir):
             return
 
-        self._do_admin_export(target_dir, export_all_months)
+        self._do_admin_export(target_dir, export_all_months,
+                              use_default_dir=False)
 
-    def _do_admin_export(self, target_dir, export_all_months):
+    # ==================================================================
+    #  МАССОВАЯ ВЫГРУЗКА — шаг 3: сама генерация файлов
+    # ==================================================================
+    def _do_admin_export(self, target_dir, export_all_months,
+                         use_default_dir=False):
         from kivy.uix.popup import Popup
         from kivy.uix.boxlayout import BoxLayout
         from kivy.uix.label import Label
@@ -1248,21 +1386,28 @@ class ReportTab(BoxLayout):
         from kivy.clock import Clock
         from excel_export import export_full_excel
         from ui_widgets import HoverButton
-        
-        prog_content = BoxLayout(orientation='vertical', spacing=10, padding=20)
-        prog_lbl = Label(text="Генерация файлов...\nПожалуйста, подождите.", 
-                         color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(16),
+
+        prog_content = BoxLayout(orientation='vertical',
+                                 spacing=10, padding=20)
+        prog_lbl = Label(text="Генерация файлов...\nПожалуйста, подождите.",
+                         color=LABEL_LIGHT, font_name=FONT_NAME,
+                         font_size=dp(16),
                          halign='center', valign='middle')
         prog_content.add_widget(prog_lbl)
-        
-        prog_popup = Popup(title="Выгрузка", content=prog_content, size_hint=(0.4, 0.25),
-                           title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+
+        prog_popup = Popup(title="Выгрузка", content=prog_content,
+                           size_hint=(0.4, 0.25), title_color=LABEL_LIGHT,
+                           title_font=FONT_NAME, auto_dismiss=False)
         prog_popup.open()
-        
+
+        # save_dir=None → export_full_excel сохранит в BASE_DIR/Табель
+        # и создаст ярлык на рабочем столе.
+        save_dir_param = None if use_default_dir else target_dir
+
         def _do_work(dt):
             count = 0
             depts = self.app.data.get('departments', [])
-            
+
             if export_all_months:
                 keys = sorted(self.app.data.get('timesheets', {}).keys())
                 for key in keys:
@@ -1270,7 +1415,11 @@ class ReportTab(BoxLayout):
                         y_str, m_str = key.split('-')
                         m_idx = int(m_str)
                         for d in depts:
-                            export_full_excel(self, force_dept=d, save_dir=target_dir, force_year=y_str, force_month=m_idx)
+                            export_full_excel(
+                                self, force_dept=d,
+                                save_dir=save_dir_param,
+                                force_year=y_str, force_month=m_idx,
+                                mass_export=True)
                             count += 1
                     except Exception as e:
                         print(f"Ошибка при выгрузке {key}: {e}")
@@ -1279,24 +1428,58 @@ class ReportTab(BoxLayout):
                 m_idx = MONTHS.index(self.month_spinner.text) + 1
                 for d in depts:
                     try:
-                        export_full_excel(self, force_dept=d, save_dir=target_dir, force_year=y_str, force_month=m_idx)
+                        export_full_excel(
+                            self, force_dept=d,
+                            save_dir=save_dir_param,
+                            force_year=y_str, force_month=m_idx,
+                            mass_export=True)
                         count += 1
                     except Exception as e:
                         print(f"Ошибка при выгрузке отдела {d}: {e}")
-            
+
             prog_lbl.text = f"Готово! Выгружено отчетов: {count}"
             prog_popup.title = "Успешно"
-            
-            close_btn = HoverButton(text="ОК", size_hint_y=None, height=dp(44),
-                                    background_color=(0.3, 0.7, 0.3, 1), color=(1,1,1,1),
-                                    font_name=FONT_NAME, bold=True)
+
+            btn_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=10)
+
+            if use_default_dir:
+                open_btn = HoverButton(
+                    text="Открыть папку",
+                    background_color=(0.35, 0.55, 0.85, 1),
+                    color=(1, 1, 1, 1),
+                    font_name=FONT_NAME, bold=True)
+                open_btn.bind(on_press=lambda *a: self._open_reports_folder())
+                btn_row.add_widget(open_btn)
+
+            close_btn = HoverButton(
+                text="ОК",
+                background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1),
+                font_name=FONT_NAME, bold=True)
             close_btn.bind(on_press=prog_popup.dismiss)
-            prog_content.add_widget(close_btn)
-            
-            prog_popup.size_hint = (0.4, 0.3)
+            btn_row.add_widget(close_btn)
+
+            prog_content.add_widget(btn_row)
+            prog_popup.size_hint = (0.45, 0.32)
 
         Clock.schedule_once(_do_work, 0.5)
 
+    # ==================================================================
+    #  Вспомогательное: открыть папку с отчётами
+    # ==================================================================
+    def _open_reports_folder(self):
+        import os
+        from config import BASE_DIR
+        folder = os.path.join(BASE_DIR, "Табель")
+        if os.path.isdir(folder):
+            try:
+                os.startfile(folder)
+            except Exception:
+                pass
+
+    # ==================================================================
+    #  Kivy-альтернатива диалога выбора папки (не используется, но
+    #  оставлена на случай включения в UI)
+    # ==================================================================
     def _show_admin_export_kivy_dialog(self):
         from kivy.uix.filechooser import FileChooserListView
         from kivy.uix.popup import Popup
@@ -1306,37 +1489,47 @@ class ReportTab(BoxLayout):
         from config import FONT_NAME, LABEL_LIGHT
         from kivy.metrics import dp
         import os
-        
+
         content = BoxLayout(orientation='vertical', spacing=10, padding=15)
         content.add_widget(Label(
             text="Выберите папку, куда сохранить Excel-файлы ВСЕХ отделов:",
-            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(16), bold=True,
-            size_hint_y=None, height=dp(30)))
-            
-        filechooser = FileChooserListView(path=os.path.expanduser('~'), dirselect=True)
+            color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(16),
+            bold=True, size_hint_y=None, height=dp(30)))
+
+        filechooser = FileChooserListView(path=os.path.expanduser('~'),
+                                          dirselect=True)
         content.add_widget(filechooser)
-        
+
         btns = BoxLayout(size_hint_y=None, height=dp(48), spacing=10)
-        ok_btn = Button(text="Выгрузить все", background_color=(0.3, 0.7, 0.3, 1), color=(1,1,1,1), font_name=FONT_NAME, font_size=dp(15), bold=True)
-        cancel_btn = Button(text="Отмена", color=(1,1,1,1), font_name=FONT_NAME, font_size=dp(15), bold=True)
+        ok_btn = Button(text="Выгрузить все",
+                        background_color=(0.3, 0.7, 0.3, 1),
+                        color=(1, 1, 1, 1), font_name=FONT_NAME,
+                        font_size=dp(15), bold=True)
+        cancel_btn = Button(text="Отмена", color=(1, 1, 1, 1),
+                            font_name=FONT_NAME, font_size=dp(15), bold=True)
         btns.add_widget(ok_btn)
         btns.add_widget(cancel_btn)
         content.add_widget(btns)
-        
-        popup = Popup(title="Выбор папки", content=content, size_hint=(0.9, 0.9),
-                      title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
-        
+
+        popup = Popup(title="Выбор папки", content=content,
+                      size_hint=(0.9, 0.9), title_color=LABEL_LIGHT,
+                      title_font=FONT_NAME, auto_dismiss=False)
+
         def do_export(*a):
             target_dir = filechooser.path
             if not target_dir or not os.path.isdir(target_dir):
                 return
             popup.dismiss()
-            self._do_admin_export(target_dir, False)
-            
+            self._do_admin_export(target_dir, False,
+                                  use_default_dir=False)
+
         ok_btn.bind(on_press=do_export)
         cancel_btn.bind(on_press=popup.dismiss)
         popup.open()
-        
+
+    # ==================================================================
+    #  Окно ошибки openpyxl
+    # ==================================================================
     def _show_openpyxl_error(self, err_msg):
         from kivy.uix.popup import Popup
         from kivy.uix.scrollview import ScrollView as _SV
@@ -1344,13 +1537,20 @@ class ReportTab(BoxLayout):
                "Техническая информация:\n" + err_msg)
         inner = BoxLayout(orientation='vertical', spacing=8, padding=8)
         sv = _SV()
-        lbl = Label(text=msg, color=LABEL_LIGHT, halign='left', valign='top', font_name=FONT_NAME, font_size=dp(13))
+        lbl = Label(text=msg, color=LABEL_LIGHT, halign='left', valign='top',
+                    font_name=FONT_NAME, font_size=dp(13))
         lbl.bind(width=lambda i, v: setattr(i, 'text_size', (v, None)))
         lbl.bind(texture_size=lbl.setter('size'))
-        sv.add_widget(lbl); inner.add_widget(sv)
-        ok_btn = Button(text="OK", size_hint_y=None, height=dp(40), font_name=FONT_NAME, font_size=dp(16), bold=True, background_color=(0.3, 0.7, 0.3, 1), color=(1, 1, 1, 1))
+        sv.add_widget(lbl)
+        inner.add_widget(sv)
+        ok_btn = Button(text="OK", size_hint_y=None, height=dp(40),
+                        font_name=FONT_NAME, font_size=dp(16), bold=True,
+                        background_color=(0.3, 0.7, 0.3, 1),
+                        color=(1, 1, 1, 1))
         inner.add_widget(ok_btn)
-        popup = Popup(title="Нужен openpyxl", content=inner, size_hint=(0.85, 0.55), title_color=LABEL_LIGHT, title_font=FONT_NAME, auto_dismiss=False)
+        popup = Popup(title="Нужен openpyxl", content=inner,
+                      size_hint=(0.85, 0.55), title_color=LABEL_LIGHT,
+                      title_font=FONT_NAME, auto_dismiss=False)
         ok_btn.bind(on_press=popup.dismiss)
         bind_enter_key(popup, popup.dismiss)
         popup.open()

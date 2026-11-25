@@ -9,7 +9,7 @@ from datetime import datetime, date
 from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
-from ui_widgets import HoverButton as Button
+from ui_widgets import HoverButton as Button, DayCell, ResultCell, CenteredField, HoverSpinner
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
@@ -165,18 +165,22 @@ class TimesheetTab(BoxLayout):
         left_box = BoxLayout(size_hint_x=0.35, spacing=5)
         left_box.add_widget(Label(text="Месяц:", size_hint_x=None, width=dp(60), color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14)))
         
-        self.month_spinner = Spinner(text=MONTHS[datetime.now().month - 1], values=MONTHS, 
-                                     size_hint_x=1, font_name=FONT_NAME, 
-                                     background_color=SPINNER_BG, color=SPINNER_FG, 
-                                     option_cls=LightSpinnerOption)
+        self.month_spinner = HoverSpinner(
+            text=MONTHS[datetime.now().month - 1],
+            values=MONTHS,
+            size_hint_x=1, font_name=FONT_NAME, 
+            background_color=SPINNER_BG, color=SPINNER_FG, 
+            option_cls=LightSpinnerOption)
         left_box.add_widget(self.month_spinner)
         
         left_box.add_widget(Label(text="Год:", size_hint_x=None, width=dp(40), color=LABEL_LIGHT, font_name=FONT_NAME, font_size=dp(14)))
         
-        self.year_spinner = Spinner(text=str(datetime.now().year), values=YEARS, 
-                                    size_hint_x=1, font_name=FONT_NAME, 
-                                    background_color=SPINNER_BG, color=SPINNER_FG, 
-                                    option_cls=LightSpinnerOption)
+        self.year_spinner = HoverSpinner(
+            text=str(datetime.now().year),
+            values=[str(y) for y in YEARS],
+            size_hint_x=1, font_name=FONT_NAME, 
+            background_color=SPINNER_BG, color=SPINNER_FG, 
+            option_cls=LightSpinnerOption)
         left_box.add_widget(self.year_spinner)
         
         self.top_bar.add_widget(left_box)
@@ -184,7 +188,6 @@ class TimesheetTab(BoxLayout):
         # --- Правая часть: Кнопки (65% ширины) ---
         right_box = BoxLayout(size_hint_x=0.65, spacing=4)
         
-        # Вспомогательная функция для создания адаптивных кнопок
         # Вспомогательная функция для создания адаптивных кнопок
         def make_btn(text, hint_x, bg):
             b = Button(
@@ -267,6 +270,7 @@ class TimesheetTab(BoxLayout):
             ('8д',   '  часы без ночных (8 тоже)'),
             ('8//N', '  часы // смена (и /)'),
             ('Tab',  '  стрелки — по ячейкам'),
+            ('ПКМ',  '  пометить как смену 2'),
         ]
 
         self.hint_wrap = BoxLayout(orientation='vertical',
@@ -1019,22 +1023,47 @@ class TimesheetTab(BoxLayout):
                 print("Ошибка сохранения ячеек:", e)
 
     def _apply_external_data(self, new_data):
-        """Обновляет только значения ячеек, не пересоздавая таблицу."""
+        """Обновляет только значения ячеек и пометки смен, не пересоздавая таблицу."""
         self._is_syncing = True
         try:
             key = self._get_key()
             ts = new_data.get('timesheets', {}).get(key, {})
 
+            hl_all = new_data.get('day_highlights', {}) or {}
+            month_hl = hl_all.get(key, {}) or {}
+
+            # --- ОБНОВЛЯЕМ ФЛАГИ ДОЛЖНОСТЕЙ (Ночные, Сверхурочные, Без вых.) ---
+            night_flags = new_data.get('night_flags', {})
+            overtime_flags = new_data.get('overtime_flags', {})
+            no_weekends_flags = new_data.get('no_weekends_flags', {})
+            
+            employees = self._employees_for_ts()
+            for emp in employees:
+                emp_id = emp['id']
+                pos_name = emp.get('position', '')
+                self._emp_night[emp_id] = bool(night_flags.get(pos_name, False))
+                self._emp_overtime[emp_id] = bool(overtime_flags.get(pos_name, False))
+                self._emp_no_weekends[emp_id] = bool(no_weekends_flags.get(pos_name, False))
+            # ---------------------------------------------------------------------
+
             for emp_id, cells in self.day_inputs.items():
                 day_values = ts.get(emp_id, {})
+                emp_hl = set(month_hl.get(emp_id, []))
                 for d_idx, cell in enumerate(cells, start=1):
                     # Если пользователь прямо сейчас печатает в этой ячейке — не трогаем
                     if cell.input.focused and (emp_id, str(d_idx)) in self._dirty_cells:
-                        continue
-
-                    new_val = str(day_values.get(str(d_idx), ''))
-                    if cell.input.text != new_val:
-                        cell.input.text = new_val
+                        pass
+                    else:
+                        new_val = str(day_values.get(str(d_idx), ''))
+                        if cell.input.text != new_val:
+                            cell.input.text = new_val
+                    # Пометка «смена 2» — приоритет над weekend/holiday
+                    is_hl = d_idx in emp_hl
+                    if getattr(cell, '_is_shift_highlighted', False) != is_hl:
+                        try:
+                            cell.set_highlighted_shift(is_hl)
+                        except Exception:
+                            pass
 
             # Пересчёт итогов внутри _is_syncing — чтобы не дёргать авто-подгонку на каждый сотрудник
             for emp_id in list(self.day_inputs.keys()):
@@ -1057,7 +1086,6 @@ class TimesheetTab(BoxLayout):
 
         self._dirty_cells.clear()
 
-        # Одна авто-подгонка после синхронизации (а не на каждый пересчёт)
         if getattr(self, '_auto_fit_right_ev', None):
             self._auto_fit_right_ev.cancel()
         self._auto_fit_right_ev = Clock.schedule_once(
@@ -2336,9 +2364,13 @@ class TimesheetTab(BoxLayout):
             _stretch_grid(days_grid, days_sv)
             self._days_grid = days_grid
 
+            hl_all = self.app.data.get('day_highlights', {}) or {}
+            month_hl = hl_all.get(key, {}) or {}
+
             for idx, emp in enumerate(employees):
                 rh = row_heights[idx]
                 emp_id = emp['id']
+                emp_hl = set(month_hl.get(emp_id, []))
                 r = BoxLayout(size_hint=(None, None),
                               size=(DAYS_W, rh), spacing=0)
                 self._all_day_rows.append(r)
@@ -2352,6 +2384,8 @@ class TimesheetTab(BoxLayout):
                                     on_key_callback=cb,
                                     on_cell_touch_down=self._on_cell_touch_down,
                                     extra_key_callback=self._on_extra_key,
+                                    is_highlighted=(d in emp_hl),
+                                    on_cell_right_click=self._on_day_cell_right_click,
                                     size_hint=(None, None),
                                     size=(day_widths[d - 1], rh))
                     cell.input.bind(text=lambda inst, val, eid=emp_id, d=d:
@@ -2553,9 +2587,13 @@ class TimesheetTab(BoxLayout):
         night_on = self._emp_night.get(emp_id, False)
         overtime_on = self._emp_overtime.get(emp_id, False)
         no_weekends_on = self._emp_no_weekends.get(emp_id, False)
-        
-        res = analyze_row(values, self._day_types, night_on, no_weekends_on)
 
+        key = self._get_key()
+        hl_all = self.app.data.get('day_highlights', {}) or {}
+        emp_hl = set((hl_all.get(key, {}) or {}).get(emp_id, []))
+
+        res = analyze_row(values, self._day_types, night_on, no_weekends_on,
+                          highlighted_days=emp_hl)
         if overtime_on:
             apply_overtime(res, self._get_norm_hours())
         else:
@@ -2590,7 +2628,45 @@ class TimesheetTab(BoxLayout):
         if getattr(self, '_auto_fit_right_ev', None):
             self._auto_fit_right_ev.cancel()
         self._auto_fit_right_ev = Clock.schedule_once(lambda dt: self._auto_fit_right_columns(), 0.5)
-        
+
+    def _on_day_cell_right_click(self, cell, touch):
+        info = self._cell_info(cell)
+        if info is None:
+            return
+        emp_id, day_idx, kind = info
+        if kind != 'd':
+            return  # только для ячеек дней
+        Clock.schedule_once(lambda dt: self._toggle_day_highlight(emp_id, day_idx), 0)
+
+    def _toggle_day_highlight(self, emp_id, day):
+        key = self._get_key()
+        hl_all = self.app.data.setdefault('day_highlights', {})
+        month = hl_all.setdefault(key, {})
+        emp_days = set(month.get(emp_id, []))
+
+        if day in emp_days:
+            emp_days.discard(day)
+        else:
+            emp_days.add(day)
+
+        if emp_days:
+            month[emp_id] = sorted(emp_days)
+        else:
+            month.pop(emp_id, None)
+
+        try:
+            self.app.safe_save(self.app.data)
+        except Exception as e:
+            print("Ошибка сохранения пометки:", e)
+
+        cells = self.day_inputs.get(emp_id, [])
+        if 1 <= day <= len(cells):
+            try:
+                cells[day - 1].set_highlighted_shift(day in emp_days)
+            except Exception:
+                pass
+        self._recalc_totals(emp_id)
+
     def show_columns_popup(self, *args):
         from kivy.uix.checkbox import CheckBox
 
