@@ -757,34 +757,55 @@ DELETE_PASSWORD = "ваш_пароль"    # config.py
 
 ## Структура проекта
 
-```
 Work-schedule/
-├── main.py                # точка входа, верхняя панель, вкладки, темы
-├── version.py             # версия приложения (единственное место)
-├── config.py              # настройка Kivy, шрифт, константы, темы, иконка
-├── data_utils.py          # фасад: загрузка/сохранение + расчёты
-├── data_calc.py           # расчёт итогов, классификация дней, норма часов
-├── data_storage.py        # сохранение/загрузка (включая local.json), filelock
-├── ui_helpers.py          # границы, измерения текста, умный скролл
-├── ui_widgets.py          # кастомные виджеты (кнопки, ячейки, поля, спиннеры)
-├── tab_employees.py       # вкладка «Рабочий персонал»
-├── tab_timesheet.py       # вкладка «Табель»
-├── tab_report.py          # вкладка «Отчёт и печать» (Excel и подписанты)
-├── tab_about.py           # вкладка «О программе»
-├── excel_export.py        # генерация .xlsx (полный и краткий)
-├── updater.py             # автообновление (проверка version.json, скачивание)
-├── requirements.txt       # список зависимостей
-├── main.spec              # инструкция для сборки через PyInstaller
-├── version_info.txt       # версия для .exe (передаётся в main.spec)
-├── tabel_installer.iss    # скрипт Inno Setup для сборки установщика
-├── publisher.py           # утилита публикации обновлений
-├── publisher_config.json  # конфиг публикатора (создаётся при первом запуске)
-├── version.json           # манифест обновления (для updater.py)
-├── tabel_data.json        # общие данные (создаётся автоматически)
+├── .gitignore # исключения для Git
+├── LICENSE # лицензионное соглашение (проприетарное)
+├── README.md # этот файл
+├── main.py # точка входа, верхняя панель, вкладки
+├── version.py # версия приложения (единственное место)
+├── requirements.txt # список зависимостей
+│
+├── config.py # настройка Kivy, шрифт, константы, пути, иконка
+├── themes.py # палитры цветов (5 тем оформления)
+├── kivy_patches.py # патчи Kivy (обработка Ctrl+кириллица и др.)
+│
+├── data_utils.py # фасад: загрузка/сохранение + расчёты
+├── data_calc.py # расчёт итогов, классификация дней, норма часов
+├── data_storage.py # сохранение/загрузка (local.json), filelock
+│
+├── ui_helpers.py # границы, измерения текста, умный скролл
+├── ui_widgets.py # базовые кастомные виджеты
+├── ui_inputs.py # кастомные текстовые поля (CenteredField и др.)
+├── ui_spinners.py # кастомные спиннеры (CenteredSpinner)
+├── ui_cells.py # ячейки таблицы (DayCell, ResultCell)
+│
+├── tab_employees.py # вкладка «Рабочий персонал»
+├── employees_popups.py # всплывающие окна вкладки персонала (должности, отделы)
+├── employees_widgets.py # виджеты списка сотрудников (RightClickBox)
+│
+├── tab_timesheet.py # вкладка «Табель»
+├── timesheet_mixins.py # миксины логики табеля (автоширина, навигация)
+│
+├── tab_report.py # вкладка «Отчёт и печать» (Excel и подписанты)
+├── excel_export.py # генерация .xlsx (полный и краткий)
+├── tab_about.py # вкладка «О программе»
+├── updater.py # автообновление (проверка version.json)
+│
+├── version_info.txt # метаданные для .exe (передаётся в main.spec)
+├── main.spec # инструкция для сборки приложения (PyInstaller)
+├── tabel_installer.iss # скрипт Inno Setup для установщика
+├── clean.ps1 # скрипт очистки артефактов сборки и кешей
+├── opengl32.zip # архив с DLL для сборки (распаковывается в main.spec)
+│
+├── publisher.py # утилита публикации обновлений
+├── Publisher.spec # инструкция для сборки утилиты (PyInstaller)
+├── Publisher.exe # скомпилированная утилита публикации
+├── version.json # манифест обновления (для updater.py)
+├── publisher_config.json # конфиг публикатора (создаётся автоматически)
+│
+├── tabel_data.json # общие данные (создаётся автоматически)
 └── ico/
-    └── tabel.ico          # иконка приложения (опционально)
-```
-
+└── tabel.ico # иконка приложения
 ---
 
 ## Автор и поддержка
