@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """Экспорт в Excel."""
 import os
+import sys
 import platform
 import webbrowser
 import math
@@ -196,7 +197,8 @@ def _draw_legend(ws, row, total_cols, border, header_fill):
                     ws.cell(row=r, column=col).border = border
     return last_r + 1
 
-def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=None, force_month=None):
+def export_full_excel(tab, *args, force_dept=None, save_dir=None,
+                      force_year=None, force_month=None, mass_export=False):
     if not HAS_OPENPYXL:
         tab._show_openpyxl_error(OPENPYXL_ERR)
         return
@@ -260,6 +262,10 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
     norm_hours, work_days, pre_count = calc_norm_hours(y, m)
     overrides_all = tab.app.data.get('result_overrides', {}).get(key, {})
 
+    # --- Пометки «смена 2» на этот месяц ---
+    hl_all = tab.app.data.get('day_highlights', {}) or {}
+    month_hl = hl_all.get(key, {}) or {}
+
     # --- Стили ---
     thin = Side(border_style="thin", color="333333")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -274,13 +280,14 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
     
     header_fill = PatternFill("solid", fgColor="E8E8E8")
     weekend_fill = PatternFill("solid", fgColor="FFDEDE")
+    highlighted_fill = PatternFill("solid", fgColor="FFA626")  # оранжевый
     holiday_fill = PatternFill("solid", fgColor="FFF3CC")
     total_fill = PatternFill("solid", fgColor="D0D0D0")
 
-    # ИЗМЕНЕНЫ РАЗМЕРЫ ШРИФТОВ
-    f_title = Font(name=EXCEL_FONT, size=15.5, bold=True, italic=True)
+    # Курсив полностью убран
+    f_title = Font(name=EXCEL_FONT, size=15.5, bold=True)
     f_date_bold = Font(name=EXCEL_FONT, size=12, bold=True)
-    f_italic = Font(name=EXCEL_FONT, size=13, italic=True)
+    f_italic = Font(name=EXCEL_FONT, size=13)
     f_head = Font(name=EXCEL_FONT, size=11, bold=True)
     f_vert = Font(name=EXCEL_FONT, size=11)
     f_cell = Font(name=EXCEL_FONT, size=11)
@@ -304,11 +311,14 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
     name_col = min(director_col + 5, total_cols)
 
     # ---------- Строка 2 (Оставляем 1-ю строку пустой) ----------
-    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=title_end)
-    c = ws.cell(row=2, column=1, value="табель учета использования рабочего времени")
+    # Сдвигаем влево в 1-ю колонку и расширяем область, чтобы текст не обрезался
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=title_end + 1)
+    c = ws.cell(row=2, column=1, value="Табель учета использования рабочего времени")
     c.font = f_title
     c.alignment = left_nowrap
 
+    # Дата остается на своем месте
+    date_start = title_end + 2
     if end_days >= date_start:
         date_end = min(end_days, approve_col - 1)
         if date_start <= date_end:
@@ -420,6 +430,9 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
         emp_id = emp['id']
         day_data = ts.get(emp_id, {})
         values = [day_data.get(str(d), '') for d in range(1, days_in_month + 1)]
+
+        # Пометки «смена 2» этого сотрудника
+        emp_hl = set(month_hl.get(emp_id, []))
         
         name_text = format_name(emp.get('name', ''))
         pos_text = emp.get('position', '').replace('\n', ' ').strip()
@@ -427,7 +440,12 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
         max_pos_len = max(max_pos_len, len(pos_text))
 
         pos_name = emp.get('position', '')
-        res = analyze_row(values, day_types, bool(night_flags.get(pos_name, False)), bool(no_weekends_flags.get(pos_name, False)))
+        res = analyze_row(
+            values, day_types,
+            bool(night_flags.get(pos_name, False)),
+            bool(no_weekends_flags.get(pos_name, False)),
+            highlighted_days=emp_hl,
+        )
         if bool(overtime_flags.get(pos_name, False)):
             apply_overtime(res, norm_hours)
         else:
@@ -462,8 +480,13 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
                 w = _excel_visual_width(v)
                 if w > max_day_w[i]:
                     max_day_w[i] = w
-            if day_types[i] == 'weekend': c.fill = weekend_fill
-            elif day_types[i] == 'holiday': c.fill = holiday_fill
+            # Заливка ячейки дня: пометка > выходной > праздник
+            if (i + 1) in emp_hl:
+                c.fill = highlighted_fill
+            elif day_types[i] == 'weekend':
+                c.fill = weekend_fill
+            elif day_types[i] == 'holiday':
+                c.fill = holiday_fill
 
         start_r = end_days + 1
         for _, key_, _w in visible_columns:
@@ -625,7 +648,7 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
     ws.row_dimensions[row_h2].height = max(VERT_HEADER_MIN_H, required_vert_h)
 
     # ---------- Подписи ----------
-    row += 4
+    row += 2
     LEFT_COL = 3
     sig_row = row + 2
 
@@ -673,8 +696,8 @@ def export_full_excel(tab, *args, force_dept=None, save_dir=None, force_year=Non
     except Exception:
         pass
 
-    _save_and_open(ws, wb, y, dept, key, "_full", custom_dir=save_dir)
-
+    _save_and_open(ws, wb, y, dept, key, "_full",
+                   custom_dir=save_dir, mass_export=mass_export)
 
 def export_short_excel(tab, *args):
     if not HAS_OPENPYXL:
@@ -707,6 +730,10 @@ def export_short_excel(tab, *args):
     day_types = [classify_day(y, m, d) for d in range(1, days_in_month + 1)]
     norm_hours, work_days, pre_count = calc_norm_hours(y, m)
 
+    # --- Пометки «смена 2» ---
+    hl_all = tab.app.data.get('day_highlights', {}) or {}
+    month_hl = hl_all.get(key, {}) or {}
+
     thin = Side(border_style="thin", color="333333")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     center = Alignment(horizontal='center', vertical='center', wrap_text=True)
@@ -718,13 +745,14 @@ def export_short_excel(tab, *args):
     
     header_fill = PatternFill("solid", fgColor="E8E8E8")
     weekend_fill = PatternFill("solid", fgColor="FFDEDE")
+    highlighted_fill = PatternFill("solid", fgColor="FFA626")  # оранжевый
     holiday_fill = PatternFill("solid", fgColor="FFF3CC")
     total_fill = PatternFill("solid", fgColor="D0D0D0")
     
-    # ИЗМЕНЕНЫ РАЗМЕРЫ ШРИФТОВ
-    f_title = Font(name=EXCEL_FONT, size=15.5, bold=True, italic=True)
+    # Курсив полностью убран
+    f_title = Font(name=EXCEL_FONT, size=15.5, bold=True)
     f_date_bold = Font(name=EXCEL_FONT, size=12, bold=True)
-    f_italic = Font(name=EXCEL_FONT, size=13, italic=True)
+    f_italic = Font(name=EXCEL_FONT, size=13)
     f_head = Font(name=EXCEL_FONT, size=11, bold=True)
     f_cell = Font(name=EXCEL_FONT, size=11)
     f_sig = Font(name=EXCEL_FONT, size=14)
@@ -744,12 +772,14 @@ def export_short_excel(tab, *args):
     title_end = min(end_days, 11)
     date_start = title_end + 1
 
-    # Строка 2 (Оставляем 1-ю пустой)
-    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=title_end)
-    c = ws.cell(row=2, column=1, value="табель учета использования рабочего времени")
+    # Строка 2 (Сдвиг влево в 1-ю колонку и расширение области, чтобы не обрезалось)
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=title_end + 1)
+    c = ws.cell(row=2, column=1, value="Табель учета использования рабочего времени")
     c.font = f_title
     c.alignment = left_nowrap
     
+    # Дата остается на своем месте
+    date_start = title_end + 2
     if end_days >= date_start:
         ws.merge_cells(start_row=2, start_column=date_start, end_row=2, end_column=end_days)
         c = ws.cell(row=2, column=date_start, value=f"{y}, {MONTHS[m-1].lower()} ({days_in_month} календарных дней)")
@@ -840,6 +870,7 @@ def export_short_excel(tab, *args):
         emp_id = emp['id']
         day_data = ts.get(emp_id, {})
         values = [day_data.get(str(d), '') for d in range(1, days_in_month + 1)]
+        emp_hl = set(month_hl.get(emp_id, []))
         
         name_text = format_name(emp.get('name', ''))
         pos_text = emp.get('position', '').replace('\n', ' ').strip()
@@ -847,7 +878,12 @@ def export_short_excel(tab, *args):
         max_pos_len = max(max_pos_len, len(pos_text))
 
         pos_name = emp.get('position', '')
-        res = analyze_row(values, day_types, bool(night_flags.get(pos_name, False)), bool(no_weekends_flags.get(pos_name, False)))
+        res = analyze_row(
+            values, day_types,
+            bool(night_flags.get(pos_name, False)),
+            bool(no_weekends_flags.get(pos_name, False)),
+            highlighted_days=emp_hl,
+        )
         emp_over = overrides_all.get(emp_id, {})
 
         h_raw = emp_over.get('часы', res.get('часы', 0.0))
@@ -884,8 +920,12 @@ def export_short_excel(tab, *args):
             if v is not None:
                 w = _excel_visual_width(v)
                 if w > max_day_w[i]: max_day_w[i] = w
-            if day_types[i] == 'weekend': c.fill = weekend_fill
-            elif day_types[i] == 'holiday': c.fill = holiday_fill
+            if (i + 1) in emp_hl:
+                c.fill = highlighted_fill
+            elif day_types[i] == 'weekend':
+                c.fill = weekend_fill
+            elif day_types[i] == 'holiday':
+                c.fill = holiday_fill
 
         hours_val_fmt = fmt_hours(hours_val)
         if str(hours_val_fmt).strip() in ('0', '0.0'): hours_val_fmt = None
@@ -1012,12 +1052,47 @@ def export_short_excel(tab, *args):
 
     _save_and_open(ws, wb, y, dept, key, "_short")
 
-def _create_network_shortcut(target_dir):
-    """Создает ярлык на рабочем столе для сетевой папки с отчетами, если его нет."""
-    import platform
+def _get_all_desktop_paths():
+    """Возвращает список путей ко всем «Рабочим столам» (пользователя и общий).
+    На Windows — через Shell API, чтобы корректно работало с OneDrive."""
+    paths = []
+
+    if platform.system() == 'Windows':
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            # CSIDL_DESKTOPDIRECTORY (0x0010) — рабочий стол текущего пользователя
+            # CSIDL_COMMON_DESKTOPDIRECTORY (0x0019) — общий рабочий стол (Public)
+            for csidl in (0x0010, 0x0019):
+                buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+                result = ctypes.windll.shell32.SHGetFolderPathW(
+                    0, csidl, 0, 0, buf)
+                if result == 0 and buf.value and os.path.isdir(buf.value):
+                    if buf.value not in paths:
+                        paths.append(buf.value)
+        except Exception:
+            pass
+
+    # Fallback (Linux / macOS / если Shell API не сработал)
+    if not paths:
+        for p in (
+            os.path.join(os.path.expanduser("~"), "Desktop"),
+            os.path.join(os.path.expanduser("~"), "Рабочий стол"),
+        ):
+            if os.path.isdir(p) and p not in paths:
+                paths.append(p)
+    return paths
+
+
+def _create_reports_shortcut(target_dir):
+    """Создаёт ярлык на рабочем столе для папки с отчётами.
+    Пропускает создание, если ярлык уже есть в ЛЮБОМ из рабочих столов
+    (общий от установщика ИЛИ пользовательский)."""
     if platform.system() != 'Windows':
         return
-        
+
+    # --- Сетевой путь или локальный ---
     is_network = False
     if target_dir.startswith('\\\\'):
         is_network = True
@@ -1031,46 +1106,51 @@ def _create_network_shortcut(target_dir):
         except Exception:
             pass
 
-    if not is_network:
+    shortcut_name = ("Сетевые отчёты табеля.lnk" if is_network
+                     else "Отчёты табеля.lnk")
+
+    desktops = _get_all_desktop_paths()
+    if not desktops:
         return
 
-    desktop_paths = [
-        os.path.join(os.path.expanduser("~"), "Desktop"),
-        os.path.join(os.path.expanduser("~"), "Рабочий стол")
-    ]
-    
-    desktop = None
-    for p in desktop_paths:
-        if os.path.exists(p):
-            desktop = p
-            break
-            
-    if not desktop:
-        return
+    # ГЛАВНОЕ: если ярлык уже есть в ЛЮБОМ из рабочих столов — не создаём
+    for desktop in desktops:
+        if os.path.exists(os.path.join(desktop, shortcut_name)):
+            return
 
-    shortcut_path = os.path.join(desktop, "Сетевые отчёты табеля.lnk")
-
-    if os.path.exists(shortcut_path):
-        return
+    # Если нигде нет — создаём в пользовательском (первый в списке)
+    desktop = desktops[0]
+    shortcut_path = os.path.join(desktop, shortcut_name)
 
     try:
+        if not os.path.isdir(target_dir):
+            os.makedirs(target_dir, exist_ok=True)
+
         import win32com.client
         shell = win32com.client.Dispatch("WScript.Shell")
         shortcut = shell.CreateShortCut(shortcut_path)
         shortcut.Targetpath = target_dir
         shortcut.WorkingDirectory = target_dir
-        
-        exe_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "Work schedule.exe"))
-        if os.path.exists(exe_path):
+
+        exe_path = None
+        if getattr(sys, 'frozen', False):
+            exe_path = sys.executable
+        else:
+            candidate = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "Work schedule.exe"))
+            if os.path.exists(candidate):
+                exe_path = candidate
+
+        if exe_path and os.path.exists(exe_path):
             shortcut.IconLocation = exe_path
-            
+
         shortcut.save()
         print(f"Создан ярлык: {shortcut_path}")
     except Exception as e:
-        print("Не удалось создать ярлык на сетевые отчеты:", e)
-
-
-def _save_and_open(ws, wb, y, dept, key, suffix, custom_dir=None):
+        print("Не удалось создать ярлык на отчёты:", e)
+        
+def _save_and_open(ws, wb, y, dept, key, suffix,
+                   custom_dir=None, mass_export=False):
     def _sanitize_folder(name):
         bad = '\\/:*?"<>|'
         for ch in bad:
@@ -1096,15 +1176,19 @@ def _save_and_open(ws, wb, y, dept, key, suffix, custom_dir=None):
         ws.page_margins.top = 0.4
         ws.page_margins.bottom = 0.4
         wb.save(path)
-        
-        base_out_dir = custom_dir if custom_dir else os.path.join(BASE_DIR, "Табель")
-        _create_network_shortcut(base_out_dir)
-        
+
+        # Ярлык на рабочем столе — для сохранений в стандартную папку
+        # (и одиночных, и массовых). Для custom_dir не создаём.
+        if not custom_dir:
+            _create_reports_shortcut(os.path.join(BASE_DIR, "Табель"))
+
     except Exception as e:
         print("Ошибка сохранения Excel:", e)
         return
-        
-    if not custom_dir:
+
+    # Открываем файл только для одиночных сохранений,
+    # чтобы при массовой выгрузке не открывать 30 окон Excel.
+    if not custom_dir and not mass_export:
         try:
             os.startfile(path)
         except Exception:

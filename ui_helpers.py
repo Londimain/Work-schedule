@@ -231,7 +231,8 @@ def ask_password_and_run(password, on_success,
                          title="Подтверждение удаления",
                          description=None,
                          btn_text="Удалить",
-                         password_prompt="Введите пароль для удаления:"):
+                         password_prompt="Введите пароль для удаления:",
+                         btn_bg=None):  # <--- НОВЫЙ ПАРАМЕТР
     """Попап с запросом пароля. При верном пароле вызывает on_success()."""
     from kivy.uix.popup import Popup
     from kivy.uix.boxlayout import BoxLayout
@@ -279,7 +280,8 @@ def ask_password_and_run(password, on_success,
 
     btns = BoxLayout(size_hint_y=None, height=dp(42), spacing=10)
     
-    btn_bg = (0.9, 0.35, 0.35, 1) if btn_text == "Удалить" else (0.25, 0.55, 0.85, 1)
+    if btn_bg is None:
+        btn_bg = (0.9, 0.35, 0.35, 1) if btn_text == "Удалить" else (0.25, 0.55, 0.85, 1)
     
     ok = Button(text=btn_text,
                 background_color=btn_bg,

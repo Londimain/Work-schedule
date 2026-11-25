@@ -1,3 +1,4 @@
+# main.spec
 # -*- mode: python ; coding: utf-8 -*-
 import os
 import glob

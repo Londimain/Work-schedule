@@ -1,0 +1,39 @@
+# Бинарные файлы и сборки
+build/
+dist/
+installer_output/
+*.exe
+*.spec~ 
+
+# Базы данных и состояние
+*.db
+*.sqlite
+*.sqlite3
+cache.db
+draft.json
+config.json
+editing_order.json
+publisher_config.json
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Виртуальное окружение
+venv/
+.venv/
+env/
+env.bak/
+venv.bak/
+
+# Скачанные данные
+updates/
+prices/
+*.zip
+*.xls
+*.xlsx
+
+# Настройки IDE (если используете)
+.vscode/
+.idea/

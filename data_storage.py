@@ -17,8 +17,6 @@ def set_last_mtime(value):
 def test_db_connection():
     """Проверяет доступность файла БД. Возвращает True, если можно писать."""
     try:
-        # Пытаемся открыть файл на дозапись (не меняя содержимое)
-        # Если файла нет, проверяем доступность папки
         d = os.path.dirname(DATA_FILE)
         if not d:
             return True
@@ -47,8 +45,6 @@ def save_local(local):
         with open(LOCAL_FILE, 'w', encoding='utf-8') as f:
             json.dump(local, f, ensure_ascii=False, indent=2)
     except Exception as e: print("Ошибка сохранения локальных настроек:", e)
-
-# ... (остальные функции get/set local остаются без изменений) ...
 
 def set_local_show_legend(value):
     local = load_local(); local['show_legend'] = bool(value); save_local(local)
@@ -149,6 +145,8 @@ def load_data():
                 data.setdefault('signer_positions', ['Энергетик'])
                 data.setdefault('extra_employees', {})
                 data.setdefault('shared_signers', [])
+                data.setdefault('day_highlights', {})
+                data.setdefault('department_passwords', {})   # <-- НОВОЕ
                 for emp in data['employees']:
                     emp.setdefault('department', '')
                     emp.setdefault('show_in_timesheet', False)
@@ -168,6 +166,7 @@ def load_data():
         "energetic_name": DEFAULT_ENERGETIC, "department_energetic": {},
         "signer_positions": ['Энергетик'], "director_name": DEFAULT_DIRECTOR, "extra_employees": {},
         "shared_signers": [],
+        "department_passwords": {},   # <-- НОВОЕ
     }
     data = apply_local_overrides(data)
     data = apply_local_order(data)
@@ -266,6 +265,8 @@ _CONFIG_KEYS = (
     'positions', 'departments', 'employees', 'extra_employees',
     'department_energetic', 'department_signer', 'signer_positions',
     'shared_signers', 'result_overrides',
+    'day_highlights',
+    'department_passwords',   # <-- НОВОЕ
 )
 
 def save_cells(app_data, month_key, cells):
@@ -283,7 +284,7 @@ def save_cells(app_data, month_key, cells):
                 if k in app_data:
                     disk[k] = app_data[k]
             disk.setdefault('employees', [])
-            disk.setdefault('timesheets', [])
+            disk.setdefault('timesheets', {})
 
         ts_disk = disk['timesheets'].setdefault(month_key, {})
         for (emp_id, day_str), new_val in cells.items():
