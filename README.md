@@ -8,9 +8,13 @@
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![Kivy](https://img.shields.io/badge/Kivy-2.0%2B-green)
 ![openpyxl](https://img.shields.io/badge/openpyxl-latest-orange)
-![License](https://img.shields.io/badge/License-MIT-lightgrey)
-![Version](https://img.shields.io/badge/version-1.3.2-brightgreen)
+![License](https://img.shields.io/badge/License-Proprietary-red)
+![Version](https://img.shields.io/badge/version-1.3.3-brightgreen)
 ![OS](https://img.shields.io/badge/OS-Windows%207%20%7C%208%20%7C%2010%20%7C%2011-lightgrey)
+
+> ⚠️ **Proprietary software.** See [LICENSE](LICENSE) for terms.
+>
+> ⚠️ **Проприетарное ПО.** Программа распространяется на условиях ограниченной лицензии. Подробности — в файле [LICENSE](LICENSE).
 
 ---
 
