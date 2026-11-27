@@ -3,6 +3,7 @@
 """Вкладка «Табель»."""
 import config  # noqa: F401
 
+import math
 from calendar import monthrange
 from datetime import datetime, date
 
@@ -40,12 +41,15 @@ from ui_helpers import (add_bottom_border, add_top_border,
 from ui_widgets import (VerticalLabel, DayCell, ResultCell, DayHeader,
                         NavTextInput, CenteredSpinner, LightSpinnerOption)
 
+import math
+
 def _stretch_grid(grid, sv):
     """Grid должен быть не меньше ScrollView по высоте,
     иначе Kivy прижимает содержимое к низу окна просмотра."""
     def _sync(*_):
         try:
             h = max(grid.minimum_height, sv.height)
+            h = math.ceil(h)
             if abs(grid.height - h) > 0.5:
                 grid.height = h
         except Exception:
@@ -134,7 +138,8 @@ class TimesheetTab(BoxLayout):
         try:
             avail_h = self.height - self.top_bar.height - self.hint_wrap.height - dp(10)
             avail_h -= self._current_header_top.height + self._current_header_bottom.height
-            
+            avail_h -= 1  # ТЕСТ: отнимаем 1 px
+
             target_h = min(avail_h, self._current_content_h)
             if target_h < dp(50):
                 target_h = dp(50)

@@ -2,7 +2,7 @@
 ; Создан для сборки, выполненной через PyInstaller (файл Work schedule.exe в папке dist)
 
 #define MyAppName "Табель учёта рабочего времени"
-#define MyAppVersion "1.3.3"
+#define MyAppVersion "1.3.4"
 #define MyAppPublisher "ОАО ""Компания МогНат"""
 #define MyAppExeName "Work schedule.exe"
 #define MyAppURL "https://github.com/Londimain/Work-schedule"

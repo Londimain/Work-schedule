@@ -148,15 +148,9 @@ class SmartScrollView(ScrollView):
     def on_touch_down(self, touch):
         if not self.collide_point(*touch.pos):
             return False
-        if 'button' in touch.profile and touch.button in ('scrollup', 'scrolldown', 'scrollleft', 'scrollright'):
-            return super().on_touch_down(touch)
-        if self._find_textinput_under(touch) is not None:
-            return False
         return super().on_touch_down(touch)
 
     def on_touch_move(self, touch):
-        if self._find_textinput_under(touch) is not None:
-            return False
         return super().on_touch_move(touch)
 
 class HorizontalScrollView(SmartScrollView):
